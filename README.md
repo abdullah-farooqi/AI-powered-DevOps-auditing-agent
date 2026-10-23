@@ -1,167 +1,121 @@
 # DevOps Repository Auditing Agent
 
-An AI agent that autonomously audits a public GitHub repository for DevOps best-practice violations and writes an evidence-based JSON report.
+A plain-Python agent that inspects a public GitHub repository for defensible DevOps and security issues and writes a JSON report. Gemini chooses which read-only inspection tool to call next; later calls can depend on earlier tool results. The project does not use LangChain, LangGraph, or another agent framework.
 
-The LLM decides which inspection tools to call and in what order. It follows up on what it observes, and every tool output is interpreted by the model before any finding is reported. There is no fixed checklist and no agent framework. The control loop, tool dispatch, and validation are plain Python.
+## What it does
 
-## Features
-
-- Accepts any public GitHub repository URL and runs unattended
-- Explicit **Observe → Reason → Select Tool → Execute Tool → Interpret → Report** loop
-- Read-only inspection: the target repo is never modified and its code is never executed
-- Evidence verification before a finding is accepted (file exists, line matches), plus de-duplication
-- Secret redaction in tool outputs, logs, and the report
-- Full tool-call trace for transparency
-- Retries with backoff on API errors, timeouts, and a hard step limit
+- Audits repository hygiene, dependencies, code quality, tests, CI, security, configuration, collaboration, and build/release practices.
+- Clones only public HTTPS repositories hosted at `github.com` into a temporary directory.
+- Uses dynamic model-selected tool calls: `list_files`, `read_file`, `search_code`, `git_log`, and `list_workflows`.
+- Verifies file findings against a file already read and a matching short snippet before adding them to the report.
+- Redacts common credentials in tool output, traces, and final findings.
+- Never executes code from the cloned repository or modifies the clone.
+- Writes partial findings if the model fails or reaches its step/time limit; incomplete runs exit nonzero.
 
 ## Requirements
 
-- Python 3.10+
-- `git` installed and on your PATH
-- An API key for a supported LLM provider (Gemini free tier works)
+- Python 3.10 or newer
+- Git on `PATH`
+- A Gemini API key from [Google AI Studio](https://aistudio.google.com/)
 
-## Installation
+## Setup
 
 ```bash
-git clone https://github.com/<your-username>/<your-repo>.git
-cd <your-repo>
-
 python -m venv .venv
-# Linux/macOS
-source .venv/bin/activate
-# Windows (PowerShell)
-.venv\Scripts\Activate.ps1
-
-pip install -r requirements.txt
+source .venv/bin/activate                 # Windows: .venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+cp .env.example .env                      # Windows: copy .env.example .env
 ```
 
-## Configuration
+Edit `.env` locally and set `GEMINI_API_KEY`. Never paste the key into source code or commit `.env`; `.gitignore` excludes it. The checked-in `.env.example` contains variable names and defaults only.
 
-Copy the example environment file and fill in your key:
+| Variable | Default | Purpose |
+|---|---:|---|
+| `LLM_PROVIDER` | `gemini` | Provider; Gemini is currently implemented |
+| `LLM_MODEL` | `gemini-3.6-flash` | Model used for audit turns |
+| `GEMINI_API_KEY` | empty | Gemini credential |
+| `MAX_STEPS` | `25` | Maximum model/tool-selection turns |
+| `TOOL_TIMEOUT_SECONDS` | `30` | Limit for local Git inspection |
+| `CLONE_TIMEOUT_SECONDS` | `120` | Maximum clone duration |
+| `LLM_TIMEOUT_MS` | `60000` | Per-request model timeout |
+| `LLM_MAX_RETRIES` | `4` | Retries after transient 429, 5xx, timeout, or connection errors |
+
+## Run an audit
 
 ```bash
-cp .env.example .env
+python agent.py \
+  --repo https://github.com/OWNER/REPOSITORY \
+  --output report.json \
+  --trace-output trace.jsonl
 ```
 
-| Variable | Description | Example |
-|---|---|---|
-| `LLM_PROVIDER` | Provider to use | `gemini` |
-| `LLM_MODEL` | Model name | `gemini-flash-latest` |
-| `GEMINI_API_KEY` | API key for the selected provider | *(your key)* |
-| `MAX_STEPS` | Max agent loop iterations | `25` |
-| `TOOL_TIMEOUT_SECONDS` | Timeout per tool call | `30` |
+`--repo` and `--output` are required. `--trace-output` is optional and writes redacted JSON Lines records of model-selected tool calls. `--max-steps` overrides `MAX_STEPS`; `--timeout-seconds` sets the total clone-plus-audit limit and is capped at 600 seconds.
 
-Never commit `.env`. Only `.env.example` (variable names, no real values) belongs in the repo.
+Exit status is `0` when the audit finishes and the report is written. A partial report is still written after an LLM failure, timeout, or step limit, and the process exits nonzero with a warning. Clone, URL, configuration, and output-file failures also exit nonzero.
 
-To use a different provider, set `LLM_PROVIDER`, `LLM_MODEL`, and the matching key variable listed in `.env.example`. Provider-specific code lives only in `llm.py`.
+## Report format
 
-## Usage
-
-```bash
-python agent.py --repo https://github.com/example/demo-project --output report.json
-```
-
-| Argument | Required | Description |
-|---|---|---|
-| `--repo` | yes | Public GitHub repository URL |
-| `--output` | yes | Path of the JSON report to write |
-
-Exit codes: `0` on a completed inspection (report written, even if `violations` is empty), nonzero on fatal errors such as invalid URL, clone failure, or missing API key, with a clear message on stderr.
-
-## Output format
+The report is UTF-8 JSON:
 
 ```json
 {
-  "repository": "https://github.com/example/demo-project",
+  "repository": "https://github.com/OWNER/REPOSITORY.git",
   "violations": [
     {
       "rule_id": "SEC-001",
       "category": "security",
-      "severity": "critical",
+      "severity": "high",
       "file": "config.py",
       "line": 17,
-      "description": "Hardcoded API credential",
-      "evidence": "Credential assigned directly in source code",
-      "recommendation": "Use a secrets manager or environment variable"
+      "description": "A credential is assigned directly in source.",
+      "evidence": "The assignment contains a password value.",
+      "recommendation": "Load credentials from an environment variable or secret store."
     }
   ]
 }
 ```
 
-- Severity is one of `critical`, `high`, `medium`, `low`
-- `file` and `line` are `null` when not applicable
-- Secret values are never included in any field
+Allowed categories are `repository_hygiene`, `dependency_management`, `code_quality`, `testing`, `ci`, `security`, `configuration`, `collaboration`, and `build_release`. Severity is `critical`, `high`, `medium`, or `low`. `file` and `line` may be `null` for repository-wide absence findings. The evidence snippet used for validation is not included in the final report. A healthy repository can produce an empty `violations` list.
 
-See `sample_report.json` for real output from the agent.
+[`sample_report.json`](sample_report.json) is an authentic completed audit report for the public `psf/requests` repository.
 
 ## Architecture
 
-```
-agent.py           CLI entry point (argparse), error handling, exit codes
-agent_loop.py      Agent loop: LLM call -> tool dispatch -> feed results back
-llm.py             Provider wrapper, retries, backoff
-prompts.py         System prompt: inspection areas, evidence rules, severity guide
-tools.py           Inspection tools and tool schemas
-report.py          Violation schema, validation, de-duplication, JSON writer
-tests/             Unit tests for tools, loop, and report validation
-```
-
-### How the loop works
-
-1. The repository is shallow-cloned into a temporary directory.
-2. The LLM receives the system prompt and the tool schemas.
-3. The LLM chooses a tool (for example `list_files`, then `read_file` on a workflow it found).
-4. The agent executes the tool, redacts secrets from the output, and returns the result to the LLM.
-5. The LLM interprets the result and either calls more tools or records a finding with `report_violation`.
-6. The loop ends when the LLM calls `finish_audit` or `MAX_STEPS` is reached.
-7. Findings are validated, de-duplicated, and written to the JSON report. The temp clone is deleted.
-
-### Tools
-
-| Tool | Purpose |
+| File | Responsibility |
 |---|---|
-| `list_files()` | Discover repository structure |
-| `read_file(path)` | Read a file (size-capped, path-restricted) |
-| `search_code(pattern)` | Search for suspicious patterns |
-| `git_log()` | Inspect commit history |
-| `report_violation(...)` | Record a finding with evidence |
-| `finish_audit()` | Signal that the investigation is complete |
+| `agent.py` | CLI, validated clone lifecycle, timeouts, JSON/trace output |
+| `agent_loop.py` | Dynamic LLM/tool loop, step limit, trace, partial results |
+| `llm.py` | Gemini SDK setup, manual function calling, transient retries |
+| `prompts.py` | Audit scope, evidence rules, precision and severity guidance |
+| `tools.py` | GitHub URL validation, safe clone, redaction, read-only inspection tools |
+| `report.py` | Finding schema validation, evidence verification, de-duplication, JSON writing |
+| `main.py` | Small reusable `generate_text(prompt)` helper for other Python code |
+| `tests/` | Local tests; they mock provider calls and do not require a key or network |
 
-### Inspection areas
+The agent does not pre-run an inspection checklist. It gives the model a repository-ready message and tool schemas, then executes the selected tool calls itself. Automatic SDK function execution is disabled. Tool output is capped and redacted before it returns to the model.
 
-Repository hygiene, dependency management, code quality, testing, GitHub Actions/CI, security, configuration, collaboration, and build/release.
+## Safety and evidence
 
-### Evidence rules
+- The URL validator accepts only `https://github.com/OWNER/REPOSITORY` URLs.
+- Git is invoked with an argument list, a timeout, prompts disabled, and credential helpers disabled.
+- Repository paths are resolved and checked for traversal and symlinks outside the clone; `.git` internals are not readable through file tools.
+- `read_file` numbers lines, caps output, and rejects binary or oversized files. `search_code` limits pattern size, files, bytes, and matches.
+- File findings require a prior `read_file`, a valid line if supplied, and a snippet found in the redacted file contents. Missing-file findings require a prior `list_files` call.
+- Remote properties such as branch protection are not inferred from local files. Optional files are not defects when an equivalent is present.
+- The cloned repository is never executed, installed, or modified.
 
-- A missing optional file or tool is not reported as a defect when an equivalent exists (for example, `pyproject.toml` instead of `requirements.txt`).
-- Remote settings such as branch protection are never inferred from repository files.
-- Every finding must be supported by content the agent actually read.
-- If a check cannot be performed, nothing is invented.
-
-## Safety
-
-- The inspected repository is only read, never modified
-- Repository code is never executed (no pytest/pip/scripts from the target)
-- Path traversal outside the clone is blocked
-- Secrets are redacted before reaching logs, traces, or the report
-- Timeouts on cloning and tool calls, with a bounded number of loop steps
-- No findings or answers are hardcoded for any specific repository
-
-## Testing
+## Tests and lint
 
 ```bash
-pytest tests/ -v
+python -m pytest -q tests
+ruff check .
 ```
 
-Tests use a small fixture repository and a mocked LLM, so no API key or network is needed. They cover each tool, path-safety and redaction, the agent loop's dispatch behavior, report validation, and CLI error handling.
+Tests cover path traversal, redaction, tool output, workflow parsing, report evidence and de-duplication, dynamic tool dispatch, retries, and CLI behavior. They use local temporary fixtures and mocked Gemini responses.
 
 ## Limitations
 
-- Findings depend on the chosen model; smaller free-tier models may miss subtle issues
-- Free-tier API rate limits can slow down large audits (the agent retries with backoff)
-- Only public GitHub repositories are supported
-- Remote-only configuration (branch protection, repository secrets) cannot be inspected
-
-## License
-
-MIT (or your chosen license)
+- Findings depend on the model and the evidence available in a public clone; review results before acting on them.
+- Rate limits or temporary model errors can leave a partial report.
+- The agent cannot inspect branch protection, repository secrets, or other remote-only settings.
+- Private repositories, SSH URLs, and local filesystem paths are intentionally unsupported.
