@@ -33,6 +33,7 @@ Edit `.env` locally and set `GEMINI_API_KEY`. Never paste the key into source co
 |---|---:|---|
 | `LLM_PROVIDER` | `gemini` | Provider; Gemini is currently implemented |
 | `LLM_MODEL` | `gemini-3.6-flash` | Model used for audit turns |
+| `LLM_FALLBACK_MODELS` | `gemini-3.5-flash-lite,gemini-3.1-flash-lite` | Comma-separated models tried after transient errors or quota limits |
 | `GEMINI_API_KEY` | empty | Gemini credential |
 | `MAX_STEPS` | `25` | Maximum model/tool-selection turns |
 | `TOOL_TIMEOUT_SECONDS` | `30` | Limit for local Git inspection |
@@ -49,7 +50,9 @@ python agent.py \
   --trace-output trace.jsonl
 ```
 
-`--repo` and `--output` are required. `--trace-output` is optional and writes redacted JSON Lines records of model-selected tool calls. `--max-steps` overrides `MAX_STEPS`; `--timeout-seconds` sets the total clone-plus-audit limit and is capped at 600 seconds.
+`--repo` and `--output` are required. `--trace-output` is optional and writes redacted JSON Lines records of model-selected tool calls and model switches. `--max-steps` overrides `MAX_STEPS`; `--timeout-seconds` sets the total clone-plus-audit limit and is capped at 600 seconds.
+
+If the active model is rate-limited or returns a transient server/network error, the agent tries each model in `LLM_FALLBACK_MODELS`. It sends the fallback the full current conversation, including prior tool results, and keeps using the model that succeeds for later turns. A fallback cannot help if all configured models are unavailable or their quotas are exhausted.
 
 Exit status is `0` when the audit finishes and the report is written. A partial report is still written after an LLM failure, timeout, or step limit, and the process exits nonzero with a warning. Clone, URL, configuration, and output-file failures also exit nonzero.
 
@@ -85,7 +88,7 @@ Allowed categories are `repository_hygiene`, `dependency_management`, `code_qual
 |---|---|
 | `agent.py` | CLI, validated clone lifecycle, timeouts, JSON/trace output |
 | `agent_loop.py` | Dynamic LLM/tool loop, step limit, trace, partial results |
-| `llm.py` | Gemini SDK setup, manual function calling, transient retries |
+| `llm.py` | Gemini SDK setup, manual function calling, transient retries and model fallback |
 | `prompts.py` | Audit scope, evidence rules, precision and severity guidance |
 | `tools.py` | GitHub URL validation, safe clone, redaction, read-only inspection tools |
 | `report.py` | Finding schema validation, evidence verification, de-duplication, JSON writing |

@@ -16,9 +16,11 @@ class FakeClient:
         self.closed = True
 
 
-def _reply(name: str | None = None, args=None) -> LLMReply:
+def _reply(name: str | None = None, args=None, model_used: str | None = None) -> LLMReply:
     calls = [ToolCall(id=f"call-{name}", name=name, args=args or {})] if name else []
-    return LLMReply(text="", tool_calls=calls, raw=None, raw_content=None)
+    return LLMReply(
+        text="", tool_calls=calls, raw=None, raw_content=None, model_used=model_used
+    )
 
 
 def test_tool_sequence_is_dynamic_and_finding_is_validated(
@@ -171,3 +173,43 @@ def test_completion_gate_requires_real_source_file(workspace: RepoWorkspace) -> 
     assert any("production source" in gap for gap in gaps)
     workspace.read_file("app.py")
     assert not any("production source" in gap for gap in _completion_gaps(workspace))
+
+
+def test_fallback_model_continues_with_existing_audit_context(
+    workspace: RepoWorkspace, monkeypatch
+) -> None:
+    monkeypatch.setenv("LLM_MODEL", "gemini-3.6-flash")
+    client = FakeClient()
+    monkeypatch.setattr(agent_loop, "create_client", lambda: client)
+    call_count = 0
+
+    def fake_chat(_client, _prompt, messages, _schemas, *, model, **_kwargs):
+        nonlocal call_count
+        call_count += 1
+        tool_outputs = [m.get("content", "") for m in messages if m.get("role") == "tool"]
+        if call_count == 1:
+            assert model == "gemini-3.6-flash"
+            return _reply("list_files", model_used="gemini-3.5-flash-lite")
+        assert model == "gemini-3.5-flash-lite"
+        if call_count == 2:
+            assert "app.py" in tool_outputs[-1]
+            return _reply("read_file", {"path": "README.md"})
+        if call_count == 3:
+            return _reply("read_file", {"path": "app.py"})
+        return _reply("finish_audit")
+
+    monkeypatch.setattr(agent_loop, "chat", fake_chat)
+    result = agent_loop.run_agent_loop(
+        workspace,
+        "https://github.com/example/repo.git",
+        max_steps=5,
+        timeout_seconds=30,
+    )
+
+    assert result.completed
+    assert any(
+        event.get("type") == "model_fallback"
+        and event.get("context_resumed") is True
+        for event in result.trace
+    )
+    assert client.closed

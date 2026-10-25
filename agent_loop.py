@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -168,6 +169,7 @@ def run_agent_loop(
     ]
     trace: list[dict[str, Any]] = []
     deadline = time.monotonic() + timeout_seconds
+    active_model = os.getenv("LLM_MODEL", "gemini-3.6-flash").strip() or "gemini-3.6-flash"
     completed = False
     error_message: str | None = None
     no_tool_nudge_sent = False
@@ -187,6 +189,7 @@ def run_agent_loop(
                     AUDIT_SYSTEM_PROMPT,
                     messages,
                     tool_schemas,
+                    model=active_model,
                     request_timeout_ms=max(1_000, int(remaining * 1000)),
                     deadline_monotonic=deadline,
                 )
@@ -200,6 +203,18 @@ def run_agent_loop(
                     }
                 )
                 break
+
+            if reply.model_used and reply.model_used != active_model:
+                trace.append(
+                    {
+                        "step": step,
+                        "type": "model_fallback",
+                        "from_model": active_model,
+                        "to_model": reply.model_used,
+                        "context_resumed": True,
+                    }
+                )
+                active_model = reply.model_used
 
             calls_for_history = [
                 {"id": call.provider_id or call.id, "name": call.name, "args": call.args}

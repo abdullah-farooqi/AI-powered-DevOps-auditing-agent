@@ -137,6 +137,60 @@ def test_retry_delay_honors_provider_retry_info() -> None:
     assert llm._retry_delay(error, 0) == 56.5
 
 
+def test_chat_falls_back_immediately_on_quota_and_reuses_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LLM_MAX_RETRIES", "4")
+    monkeypatch.setenv(
+        "LLM_FALLBACK_MODELS", "gemini-3.5-flash-lite,gemini-3.1-flash-lite"
+    )
+    sleeps = []
+    monkeypatch.setattr(llm.time, "sleep", sleeps.append)
+
+    class DailyQuotaError(Exception):
+        def __init__(self):
+            super().__init__("daily quota exhausted")
+            self.code = 429
+            self.details = {
+                "error": {
+                    "status": "RESOURCE_EXHAUSTED",
+                    "details": [
+                        {
+                            "@type": "type.googleapis.com/google.rpc.RetryInfo",
+                            "retryDelay": "70774s",
+                        }
+                    ],
+                }
+            }
+
+    class ModelAPI:
+        def __init__(self):
+            self.calls = []
+
+        def generate_content(self, **kwargs):
+            self.calls.append(kwargs)
+            if kwargs["model"] == "gemini-3.6-flash":
+                raise DailyQuotaError()
+            return _response_with_text("resumed")
+
+    models = ModelAPI()
+    reply = chat(
+        SimpleNamespace(models=models),
+        "system prompt",
+        [{"role": "user", "content": "continue the audit"}],
+        [],
+    )
+
+    assert [call["model"] for call in models.calls] == [
+        "gemini-3.6-flash",
+        "gemini-3.5-flash-lite",
+    ]
+    assert models.calls[0]["contents"] is models.calls[1]["contents"]
+    assert reply.model_used == "gemini-3.5-flash-lite"
+    assert reply.text == "resumed"
+    assert sleeps == []
+
+
 def test_chat_does_not_retry_non_transient_errors(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LLM_MAX_RETRIES", "3")
 

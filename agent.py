@@ -125,6 +125,12 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Report written to {output_path} ({len(result.findings)} finding(s)).")
     if trace_path is not None:
         print(f"Redacted trace written to {trace_path}.")
+    for event in result.trace:
+        if event.get("type") == "model_fallback":
+            print(
+                "Gemini model changed from "
+                f"{event['from_model']} to {event['to_model']}; continuing with the existing audit context."
+            )
     if not result.completed:
         detail = f" {result.error}" if result.error else ""
         print(f"Audit incomplete; partial report was written.{detail}", file=sys.stderr)

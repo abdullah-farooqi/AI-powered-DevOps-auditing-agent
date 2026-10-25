@@ -19,6 +19,8 @@ from tools import redact
 load_dotenv()
 
 TRANSIENT_STATUS_CODES = {408, 429, 500, 502, 503, 504}
+DEFAULT_MODEL = "gemini-3.6-flash"
+DEFAULT_FALLBACK_MODELS = "gemini-3.5-flash-lite,gemini-3.1-flash-lite"
 
 
 class LLMError(RuntimeError):
@@ -39,6 +41,7 @@ class LLMReply:
     tool_calls: list[ToolCall]
     raw: Any
     raw_content: Any
+    model_used: str | None = None
 
 
 def _positive_int(name: str, default: int, minimum: int = 1) -> int:
@@ -189,6 +192,17 @@ def _retry_delay(error: Exception, attempt: int) -> float:
     return max(backoff, provider_delay or 0.0)
 
 
+def _model_chain(requested_model: str) -> list[str]:
+    """Return the active model followed by configured fallbacks, without duplicates."""
+    configured = os.getenv("LLM_FALLBACK_MODELS", DEFAULT_FALLBACK_MODELS)
+    models = [requested_model]
+    for fallback in configured.split(","):
+        candidate = fallback.strip()
+        if candidate and candidate not in models:
+            models.append(candidate)
+    return models
+
+
 def chat(
     client: genai.Client,
     system_prompt: str,
@@ -200,60 +214,81 @@ def chat(
     deadline_monotonic: float | None = None,
 ) -> LLMReply:
     """Ask Gemini for the next response, with manual tool execution and bounded retries."""
-    model_name = model or os.getenv("LLM_MODEL", "gemini-3.6-flash").strip()
-    if not model_name:
+    requested_model = model or os.getenv("LLM_MODEL", DEFAULT_MODEL).strip()
+    if not requested_model:
         raise LLMError("LLM_MODEL cannot be empty.")
     max_retries = _positive_int("LLM_MAX_RETRIES", 4, minimum=0)
     timeout_ms = request_timeout_ms or _positive_int("LLM_TIMEOUT_MS", 60_000)
     function_tools = _function_tools(tool_schemas)
     contents = _convert_messages(messages)
-    attempts = max_retries + 1
+    attempts_per_model = max_retries + 1
     attempts_made = 0
     response = None
     last_error: Exception | None = None
+    model_used: str | None = None
+    model_errors: list[str] = []
 
-    for attempt in range(attempts):
-        attempt_timeout_ms = timeout_ms
-        if deadline_monotonic is not None:
-            remaining_ms = int((deadline_monotonic - time.monotonic()) * 1000)
-            if remaining_ms <= 0:
-                last_error = TimeoutError("Global audit deadline reached.")
-                break
-            attempt_timeout_ms = min(attempt_timeout_ms, remaining_ms)
-        config = types.GenerateContentConfig(
-            system_instruction=system_prompt,
-            tools=function_tools,
-            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
-            temperature=0.1,
-            max_output_tokens=8192,
-            http_options=types.HttpOptions(
-                timeout=attempt_timeout_ms,
-                retry_options=types.HttpRetryOptions(attempts=1),
-            ),
-        )
-        try:
-            attempts_made += 1
-            response = client.models.generate_content(
-                model=model_name,
-                contents=contents,
-                config=config,
-            )
-            break
-        except Exception as exc:  # noqa: BLE001 - the SDK raises different transient transport types.
-            last_error = exc
-            if not _is_transient(exc) or attempt + 1 >= attempts:
-                break
-            delay = _retry_delay(exc, attempt)
+    for model_index, model_name in enumerate(_model_chain(requested_model)):
+        response = None
+        for attempt in range(attempts_per_model):
+            attempt_timeout_ms = timeout_ms
             if deadline_monotonic is not None:
-                remaining = deadline_monotonic - time.monotonic()
-                if remaining <= delay:
-                    last_error = exc
+                remaining_ms = int((deadline_monotonic - time.monotonic()) * 1000)
+                if remaining_ms <= 0:
+                    last_error = TimeoutError("Global audit deadline reached.")
                     break
-                delay = min(delay, remaining)
-            time.sleep(delay)
+                attempt_timeout_ms = min(attempt_timeout_ms, remaining_ms)
+            config = types.GenerateContentConfig(
+                system_instruction=system_prompt,
+                tools=function_tools,
+                automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+                temperature=0.1,
+                max_output_tokens=8192,
+                http_options=types.HttpOptions(
+                    timeout=attempt_timeout_ms,
+                    retry_options=types.HttpRetryOptions(attempts=1),
+                ),
+            )
+            try:
+                attempts_made += 1
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=contents,
+                    config=config,
+                )
+                model_used = model_name
+                break
+            except Exception as exc:  # noqa: BLE001 - the SDK raises different transient transport types.
+                last_error = exc
+                # A 429 can carry a daily reset delay many hours long. Move to the
+                # next model immediately instead of sleeping past this audit's deadline.
+                if getattr(exc, "code", None) == 429:
+                    break
+                if not _is_transient(exc) or attempt + 1 >= attempts_per_model:
+                    break
+                delay = _retry_delay(exc, attempt)
+                if deadline_monotonic is not None:
+                    remaining = deadline_monotonic - time.monotonic()
+                    if remaining <= delay:
+                        break
+                    delay = min(delay, remaining)
+                time.sleep(delay)
+
+        if response is not None:
+            break
+        if last_error is not None:
+            model_errors.append(f"{model_name}: {redact(str(last_error))[:700]}")
+        if (
+            model_index + 1 >= len(_model_chain(requested_model))
+            or last_error is None
+            or not _is_transient(last_error)
+        ):
+            break
 
     if response is None:
-        error_text = redact(str(last_error) if last_error else "unknown provider error")
+        error_text = "; ".join(model_errors) or redact(
+            str(last_error) if last_error else "unknown provider error"
+        )
         raise LLMError(
             f"Gemini request failed after {attempts_made} attempt(s): {error_text}"
         ) from last_error
@@ -285,4 +320,5 @@ def chat(
         tool_calls=tool_calls,
         raw=response,
         raw_content=raw_content,
+        model_used=model_used,
     )
