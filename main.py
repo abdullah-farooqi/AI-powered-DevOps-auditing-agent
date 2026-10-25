@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 
-DEFAULT_MODEL = "gemini-3.6-flash"
+from llm import DEFAULT_MODEL
 
 load_dotenv()
 

@@ -31,15 +31,23 @@ Edit `.env` locally and set `GEMINI_API_KEY`. Never paste the key into source co
 
 | Variable | Default | Purpose |
 |---|---:|---|
-| `LLM_PROVIDER` | `gemini` | Provider; Gemini is currently implemented |
-| `LLM_MODEL` | `gemini-3.6-flash` | Model used for audit turns |
-| `LLM_FALLBACK_MODELS` | `gemini-3.5-flash-lite,gemini-3.1-flash-lite` | Comma-separated models tried after transient errors or quota limits |
-| `GEMINI_API_KEY` | empty | Gemini credential |
+| `LLM_PROVIDER` | `gemini` | Provider (`gemini` or `openai_compatible`) |
+| `LLM_MODEL` | `gemini-3.8-flash` | Primary model used for audit turns |
+| `LLM_FALLBACK_MODELS` | `gemini-3.6-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite` | Priority-ordered fallback models |
+| `LLM_CRITIC_MODEL` | `gemini-3.1-flash-lite` | Model used for verification/critic pass |
+| `LLM_THINKING_LEVEL` | `medium` | Thinking level (`low`, `medium`, `high`) when supported |
+| `GEMINI_API_KEY` | empty | Gemini API key |
+| `OPENAI_API_KEY` | empty | API key for OpenAI-compatible provider |
+| `LLM_BASE_URL` | empty | Base URL for OpenAI-compatible provider (e.g., Groq, OpenRouter) |
+| `LLM_FALLBACK_PROVIDER` | empty | Fallback provider when primary provider exhausts all models |
 | `MAX_STEPS` | `25` | Maximum model/tool-selection turns |
 | `TOOL_TIMEOUT_SECONDS` | `30` | Limit for local Git inspection |
 | `CLONE_TIMEOUT_SECONDS` | `120` | Maximum clone duration |
 | `LLM_TIMEOUT_MS` | `60000` | Per-request model timeout |
 | `LLM_MAX_RETRIES` | `4` | Retries after transient 429, 5xx, timeout, or connection errors |
+
+> [!NOTE]
+> Older Gemini models may eventually be retired by the provider. The agent's `ModelRouter` and fallback chain gracefully tolerate `404 Not Found` responses by marking the model unavailable for the run and moving directly to active models without wasting retries.
 
 ## Run an audit
 
@@ -50,9 +58,13 @@ python agent.py \
   --trace-output trace.jsonl
 ```
 
-`--repo` and `--output` are required. `--trace-output` is optional and writes redacted JSON Lines records of model-selected tool calls and model switches. `--max-steps` overrides `MAX_STEPS`; `--timeout-seconds` sets the total clone-plus-audit limit and is capped at 600 seconds.
+`--repo` and `--output` are required. `--trace-output` is optional and writes redacted JSON Lines records of model-selected tool calls, model switches, cooldowns, and retries. `--max-steps` overrides `MAX_STEPS`; `--timeout-seconds` sets the total clone-plus-audit limit and is capped at 600 seconds.
 
-If the active model is rate-limited or returns a transient server/network error, the agent tries each model in `LLM_FALLBACK_MODELS`. It sends the fallback the full current conversation, including prior tool results, and keeps using the model that succeeds for later turns. A fallback cannot help if all configured models are unavailable or their quotas are exhausted.
+### Model router, cooldowns, and fallback
+The `ModelRouter` manages per-model health and cooldowns across turns:
+- **Cooldowns on 429**: Rate-limited models enter temporary cooldown using the provider's `retryDelay` (or capped backoff). Calls return to the primary model once its cooldown expires (no permanent downgrade).
+- **Graceful model switches**: Mid-audit model switches automatically strip model-specific internal reasoning/raw signatures if a 400 is encountered, retrying once cleanly.
+- **Cross-provider fallback**: When configured, the agent can fail over from Gemini to an OpenAI-compatible provider (`OPENAI_API_KEY`, `LLM_BASE_URL`).
 
 ### Exit-code and partial-result policy
 - **Fatal errors** (invalid URL, clone failure, missing API key, unwritable output, all models failing before ANY progress) exit nonzero with a clear message on stderr.

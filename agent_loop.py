@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from llm import LLMError, chat, create_client
+from llm import DEFAULT_MODEL, LLMError, ModelRouter, _model_chain, chat, create_client
 from prompts import AUDIT_SYSTEM_PROMPT
 from report import REPORT_TOOL_SCHEMA, FindingStore
 from tools import INSPECTION_TOOL_SCHEMAS, RepositoryTools, RepoWorkspace, redact
@@ -169,7 +169,8 @@ def run_agent_loop(
     ]
     trace: list[dict[str, Any]] = []
     deadline = time.monotonic() + timeout_seconds
-    active_model = os.getenv("LLM_MODEL", "gemini-3.6-flash").strip() or "gemini-3.6-flash"
+    active_model = os.getenv("LLM_MODEL", DEFAULT_MODEL).strip() or DEFAULT_MODEL
+    router = ModelRouter(_model_chain(active_model))
     completed = False
     error_message: str | None = None
     no_tool_nudge_sent = False
@@ -192,6 +193,9 @@ def run_agent_loop(
                     model=active_model,
                     request_timeout_ms=max(1_000, int(remaining * 1000)),
                     deadline_monotonic=deadline,
+                    router=router,
+                    trace=trace,
+                    step=step,
                 )
             except LLMError as exc:
                 error_message = redact(str(exc))
@@ -270,6 +274,7 @@ def run_agent_loop(
                         "step": step,
                         "tool": redact(call.name),
                         "tool_call_id": call.id,
+                        "model": reply.model_used,
                         "arguments": safe_args,
                         "output": output[:MAX_TOOL_RESULT_CHARS],
                     }

@@ -145,8 +145,9 @@ def test_chat_falls_back_immediately_on_quota_and_reuses_context(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("LLM_MAX_RETRIES", "4")
+    monkeypatch.setenv("LLM_MODEL", "gemini-3.8-flash")
     monkeypatch.setenv(
-        "LLM_FALLBACK_MODELS", "gemini-3.5-flash-lite,gemini-3.1-flash-lite"
+        "LLM_FALLBACK_MODELS", "gemini-3.6-flash,gemini-3.5-flash-lite"
     )
     sleeps = []
     monkeypatch.setattr(llm.time, "sleep", sleeps.append)
@@ -173,7 +174,7 @@ def test_chat_falls_back_immediately_on_quota_and_reuses_context(
 
         def generate_content(self, **kwargs):
             self.calls.append(kwargs)
-            if kwargs["model"] == "gemini-3.6-flash":
+            if kwargs["model"] == "gemini-3.8-flash":
                 raise DailyQuotaError()
             return _response_with_text("resumed")
 
@@ -186,11 +187,11 @@ def test_chat_falls_back_immediately_on_quota_and_reuses_context(
     )
 
     assert [call["model"] for call in models.calls] == [
+        "gemini-3.8-flash",
         "gemini-3.6-flash",
-        "gemini-3.5-flash-lite",
     ]
     assert models.calls[0]["contents"] is models.calls[1]["contents"]
-    assert reply.model_used == "gemini-3.5-flash-lite"
+    assert reply.model_used == "gemini-3.6-flash"
     assert reply.text == "resumed"
     assert sleeps == []
 
@@ -253,7 +254,8 @@ def test_is_transient_classification() -> None:
 
 def test_chat_404_moves_immediately_to_next_model(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LLM_MAX_RETRIES", "3")
-    monkeypatch.setenv("LLM_FALLBACK_MODELS", "gemini-3.5-flash-lite")
+    monkeypatch.setenv("LLM_MODEL", "gemini-3.8-flash")
+    monkeypatch.setenv("LLM_FALLBACK_MODELS", "gemini-3.6-flash")
 
     class NotFoundError(Exception):
         code = 404
@@ -264,7 +266,7 @@ def test_chat_404_moves_immediately_to_next_model(monkeypatch: pytest.MonkeyPatc
 
         def generate_content(self, **kwargs):
             self.calls.append(kwargs["model"])
-            if kwargs["model"] == "gemini-3.6-flash":
+            if kwargs["model"] == "gemini-3.8-flash":
                 raise NotFoundError("model not found")
             return _response_with_text("resumed from fallback")
 
@@ -276,14 +278,15 @@ def test_chat_404_moves_immediately_to_next_model(monkeypatch: pytest.MonkeyPatc
         [],
     )
     # 404 should not retry 3 times; it should immediately try fallback
-    assert models.calls == ["gemini-3.6-flash", "gemini-3.5-flash-lite"]
-    assert reply.model_used == "gemini-3.5-flash-lite"
+    assert models.calls == ["gemini-3.8-flash", "gemini-3.6-flash"]
+    assert reply.model_used == "gemini-3.6-flash"
     assert reply.text == "resumed from fallback"
 
 
 def test_chat_model_specific_400_moves_to_next_model(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LLM_MAX_RETRIES", "3")
-    monkeypatch.setenv("LLM_FALLBACK_MODELS", "gemini-3.5-flash-lite")
+    monkeypatch.setenv("LLM_MODEL", "gemini-3.8-flash")
+    monkeypatch.setenv("LLM_FALLBACK_MODELS", "gemini-3.6-flash")
 
     class ModelIncompatibleError(Exception):
         code = 400
@@ -294,7 +297,7 @@ def test_chat_model_specific_400_moves_to_next_model(monkeypatch: pytest.MonkeyP
 
         def generate_content(self, **kwargs):
             self.calls.append(kwargs["model"])
-            if kwargs["model"] == "gemini-3.6-flash":
+            if kwargs["model"] == "gemini-3.8-flash":
                 raise ModelIncompatibleError("feature is not supported for this model")
             return _response_with_text("resumed from fallback")
 
@@ -305,13 +308,14 @@ def test_chat_model_specific_400_moves_to_next_model(monkeypatch: pytest.MonkeyP
         [{"role": "user", "content": "hello"}],
         [],
     )
-    assert models.calls == ["gemini-3.6-flash", "gemini-3.5-flash-lite"]
-    assert reply.model_used == "gemini-3.5-flash-lite"
+    assert models.calls == ["gemini-3.8-flash", "gemini-3.6-flash"]
+    assert reply.model_used == "gemini-3.6-flash"
 
 
 def test_chat_auth_error_fails_fast_without_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LLM_MAX_RETRIES", "3")
-    monkeypatch.setenv("LLM_FALLBACK_MODELS", "gemini-3.5-flash-lite")
+    monkeypatch.setenv("LLM_MODEL", "gemini-3.8-flash")
+    monkeypatch.setenv("LLM_FALLBACK_MODELS", "gemini-3.6-flash")
 
     class AuthError(Exception):
         code = 401
@@ -333,4 +337,180 @@ def test_chat_auth_error_fails_fast_without_fallback(monkeypatch: pytest.MonkeyP
             [],
         )
     # Must fail fast after 1 attempt on primary model without trying fallback
-    assert models.calls == ["gemini-3.6-flash"]
+    assert models.calls == ["gemini-3.8-flash"]
+
+
+def test_model_router_health_cooldown_and_recovery() -> None:
+    router = llm.ModelRouter(["model-a", "model-b"])
+    now = 100.0
+
+    # Both available initially; model-a is first
+    assert router.candidate_models(now) == ["model-a", "model-b"]
+
+    # 429 sets cooldown on model-a
+    router.mark_cooldown("model-a", 10.0, "rate limit error with AKIA1234567890123456", now=now)
+    # Secret must be redacted
+    assert "AKIA1234567890123456" not in router.health["model-a"].last_error
+    assert "[REDACTED_AWS_KEY]" in router.health["model-a"].last_error
+
+    # While cooling down, model-a is skipped; model-b is chosen
+    assert router.candidate_models(now + 2.0) == ["model-b"]
+
+    # After cooldown expires, model-a is available again (no permanent downgrade)
+    assert router.candidate_models(now + 11.0) == ["model-a", "model-b"]
+
+    # 404 marks model-a permanently unavailable
+    router.mark_unavailable("model-a", "404 not found")
+    assert router.candidate_models(now + 20.0) == ["model-b"]
+
+    # When all models cool down and deadline does not allow
+    router.mark_cooldown("model-b", 50.0, "rate limit")
+    assert router.candidate_models(now + 20.0) == []
+    summary = router.summary()
+    assert "model-a (unavailable" in summary
+    assert "model-b (cooling down" in summary
+
+
+def test_mid_conversation_switch_strips_raw_content_on_signature_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LLM_MAX_RETRIES", "1")
+
+    class SignatureMismatchError(Exception):
+        code = 400
+
+    raw_model_content = types.Content(
+        role="model",
+        parts=[types.Part.from_text(text="old model internal reasoning")],
+    )
+
+    calls = []
+
+    class ModelAPI:
+        def generate_content(self, **kwargs):
+            calls.append(kwargs)
+            # If contents has the raw_model_content instance, fail with reasoning 400
+            if kwargs["contents"][1] is raw_model_content:
+                raise SignatureMismatchError("contents[1] contains unsupported reasoning part")
+            return _response_with_text("recovered after strip")
+
+    models = ModelAPI()
+    reply = chat(
+        SimpleNamespace(models=models),
+        "system prompt",
+        [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "raw_content": raw_model_content, "content": "thought"},
+            {"role": "tool", "name": "read_file", "content": "file data"},
+        ],
+        [],
+    )
+
+    assert len(calls) == 2
+    # Second call had contents rebuilt without raw_model_content
+    assert calls[1]["contents"][1] is not raw_model_content
+    assert reply.text == "recovered after strip"
+
+
+def test_openai_compatible_provider_mocked(monkeypatch: pytest.MonkeyPatch) -> None:
+    import json
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": "Analyzing repository",
+                            "tool_calls": [
+                                {
+                                    "id": "call-123",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "list_files",
+                                        "arguments": json.dumps({"directory": ""}),
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ]
+            }
+
+    class FakeHttpxClient:
+        def __init__(self, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def post(self, url, headers=None, json=None):
+            assert "/chat/completions" in url
+            assert headers.get("Authorization") == "Bearer fake-openai-key"
+            assert json["model"] == "gpt-4o-mini"
+            assert json["messages"][0]["role"] == "system"
+            assert json["tools"][0]["function"]["name"] == "list_files"
+            return FakeResponse()
+
+    monkeypatch.setattr(llm.httpx, "Client", FakeHttpxClient)
+    reply = llm._chat_openai_compatible(
+        "You are an auditor",
+        [{"role": "user", "content": "list repo"}],
+        [
+            {
+                "name": "list_files",
+                "description": "List files",
+                "parameters": {"type": "object", "properties": {}},
+            }
+        ],
+        model="gpt-4o-mini",
+        base_url="https://api.openai.com/v1",
+        api_key="fake-openai-key",
+    )
+
+    assert reply.text == "Analyzing repository"
+    assert len(reply.tool_calls) == 1
+    assert reply.tool_calls[0].name == "list_files"
+    assert reply.tool_calls[0].args == {"directory": ""}
+    assert reply.tool_calls[0].provider_id == "call-123"
+
+
+def test_chat_observability_records_events_in_trace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LLM_MAX_RETRIES", "1")
+    monkeypatch.setenv("LLM_MODEL", "gemini-3.8-flash")
+    monkeypatch.setenv("LLM_FALLBACK_MODELS", "gemini-3.6-flash")
+
+    class BusyError(Exception):
+        code = 503
+
+    class ModelAPI:
+        def __init__(self):
+            self.calls = 0
+
+        def generate_content(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                raise BusyError("server busy")
+            return _response_with_text("recovered")
+
+    monkeypatch.setattr(llm.time, "sleep", lambda d: None)
+    trace = []
+    models = ModelAPI()
+    reply = chat(
+        SimpleNamespace(models=models),
+        "system prompt",
+        [{"role": "user", "content": "hello"}],
+        [],
+        trace=trace,
+        step=1,
+    )
+
+    assert reply.text == "recovered"
+    assert any(event.get("type") == "model_retry" for event in trace)
