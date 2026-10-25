@@ -1,152 +1,153 @@
 # DevOps Repository Auditing Agent
 
-A plain-Python agent that inspects a public GitHub repository for defensible DevOps and security issues and writes a JSON report. Gemini chooses which read-only inspection tool to call next; later calls can depend on earlier tool results. The project does not use LangChain, LangGraph, or another agent framework.
+A plain-Python agent that inspects public GitHub repositories for defensible DevOps, CI/CD, and security defects, producing an evidence-backed JSON report.
 
-## What it does
+The agent uses an explicit, deterministic plain-Python control loop without external agent frameworks (no LangChain, LangGraph, CrewAI, AutoGen, or LlamaIndex). The LLM autonomously and dynamically decides which read-only inspection tools to invoke based on earlier findings and repository structure.
 
-- Audits repository hygiene, dependencies, code quality, tests, CI, security, configuration, collaboration, and build/release practices.
-- Clones only public HTTPS repositories hosted at `github.com` into a temporary directory.
-- Uses dynamic model-selected tool calls: `list_files`, `read_file`, `search_code`, `git_log`, and `list_workflows`.
-- Verifies file findings against a file already read and a matching short snippet before adding them to the report.
-- Redacts common credentials in tool output, traces, and final findings.
-- Never executes code from the cloned repository or modifies the clone.
-- Writes accepted findings incrementally: fatal errors exit nonzero, while audits reaching step/time limits after inspection steps completed write the report, warn on stderr, and exit 0.
+---
 
-## Requirements
+## Output Contract & JSON Schema
 
-- Python 3.10 or newer
-- Git on `PATH`
-- A Gemini API key from [Google AI Studio](https://aistudio.google.com/)
+The agent outputs a strictly formatted JSON report conforming to [`schemas/report.schema.json`](schemas/report.schema.json).
 
-## Setup
-
-```bash
-python -m venv .venv
-source .venv/bin/activate                 # Windows: .venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
-cp .env.example .env                      # Windows: copy .env.example .env
-```
-
-Edit `.env` locally and set `GEMINI_API_KEY`. Never paste the key into source code or commit `.env`; `.gitignore` excludes it. The checked-in `.env.example` contains variable names and defaults only.
-
-| Variable | Default | Purpose |
-|---|---:|---|
-| `LLM_PROVIDER` | `gemini` | Provider (`gemini` or `openai_compatible`) |
-| `LLM_MODEL` | `gemini-3.8-flash` | Primary model used for audit turns |
-| `LLM_FALLBACK_MODELS` | `gemini-3.6-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite` | Priority-ordered fallback models |
-| `LLM_CRITIC_MODEL` | `gemini-3.1-flash-lite` | Model used for verification/critic pass |
-| `LLM_THINKING_LEVEL` | `medium` | Thinking level (`low`, `medium`, `high`) when supported |
-| `GEMINI_API_KEY` | empty | Gemini API key |
-| `OPENAI_API_KEY` | empty | API key for OpenAI-compatible provider |
-| `LLM_BASE_URL` | empty | Base URL for OpenAI-compatible provider (e.g., Groq, OpenRouter) |
-| `LLM_FALLBACK_PROVIDER` | empty | Fallback provider when primary provider exhausts all models |
-| `MAX_STEPS` | `25` | Maximum model/tool-selection turns |
-| `TOOL_TIMEOUT_SECONDS` | `30` | Limit for local Git inspection |
-| `CLONE_TIMEOUT_SECONDS` | `120` | Maximum clone duration |
-| `LLM_TIMEOUT_MS` | `60000` | Per-request model timeout |
-| `LLM_MAX_RETRIES` | `4` | Retries after transient 429, 5xx, timeout, or connection errors |
-
-> [!NOTE]
-> Older Gemini models may eventually be retired by the provider. The agent's `ModelRouter` and fallback chain gracefully tolerate `404 Not Found` responses by marking the model unavailable for the run and moving directly to active models without wasting retries.
-
-## Run an audit
-
-```bash
-python agent.py \
-  --repo https://github.com/OWNER/REPOSITORY \
-  --output report.json \
-  --trace-output trace.jsonl
-```
-
-`--repo` and `--output` are required. `--trace-output` is optional and writes redacted JSON Lines records of model-selected tool calls, model switches, cooldowns, and retries. `--max-steps` overrides `MAX_STEPS`; `--timeout-seconds` sets the total clone-plus-audit limit and is capped at 600 seconds.
-
-### Model router, cooldowns, and fallback
-The `ModelRouter` manages per-model health and cooldowns across turns:
-- **Cooldowns on 429**: Rate-limited models enter temporary cooldown using the provider's `retryDelay` (or capped backoff). Calls return to the primary model once its cooldown expires (no permanent downgrade).
-- **Graceful model switches**: Mid-audit model switches automatically strip model-specific internal reasoning/raw signatures if a 400 is encountered, retrying once cleanly.
-- **Cross-provider fallback**: When configured, the agent can fail over from Gemini to an OpenAI-compatible provider (`OPENAI_API_KEY`, `LLM_BASE_URL`).
-
-### Exit-code and partial-result policy
-- **Fatal errors** (invalid URL, clone failure, missing API key, unwritable output, all models failing before ANY progress) exit nonzero with a clear message on stderr.
-- **Audits hitting the step limit or global timeout** write the report with all findings accepted so far, print a warning to stderr, and exit `0`.
-- **LLM unavailable mid-audit after tools have run** writes the partial report, warns on stderr, and exits `0`. It exits nonzero only if zero inspection steps completed.
-
-## Report format
-
-The report is UTF-8 JSON:
+### Format
 
 ```json
 {
-  "repository": "https://github.com/OWNER/REPOSITORY",
+  "repository": "https://github.com/octocat/Hello-World",
   "violations": [
     {
-      "rule_id": "SEC-001",
-      "category": "security",
-      "severity": "high",
-      "file": "config.py",
-      "line": 17,
-      "description": "A credential is assigned directly in source.",
-      "evidence": "The assignment contains a password value.",
-      "recommendation": "Load credentials from an environment variable or secret store."
+      "rule_id": "HYG-001",
+      "category": "repository_hygiene",
+      "severity": "low",
+      "file": null,
+      "line": null,
+      "description": "Repository does not define a standard OSS license file (LICENSE or LICENSE.md).",
+      "evidence": "No LICENSE, LICENSE.md, or COPYING file found in the repository root directory.",
+      "recommendation": "Add an open-source license such as MIT, Apache-2.0, or BSD to clarify usage terms."
     }
   ]
 }
 ```
 
-Allowed categories are `repository_hygiene`, `dependency_management`, `code_quality`, `testing`, `ci`, `security`, `configuration`, `collaboration`, and `build_release`. Severity is `critical`, `high`, `medium`, or `low`. `file` and `line` may be `null` for repository-wide absence findings. The evidence snippet used for validation is not included in the final report. A healthy repository can produce an empty `violations` list.
+- **Severity levels**: `critical`, `high`, `medium`, `low`.
+- **Nullable fields**: `file` and `line` are null for repository-wide absence findings.
+- **Redaction guarantee**: Secret values are masked with `[REDACTED*]` tokens across all findings, evidence, logs, and traces.
 
-[`sample_report.json`](sample_report.json) is an authentic completed audit report for the public `psf/requests` repository.
+---
+
+## Quickstart
+
+### Prerequisites
+- Python 3.10+
+- Git installed on `PATH`
+- A Gemini API key from [Google AI Studio](https://aistudio.google.com/)
+
+### Setup
+
+```bash
+python -m venv .venv
+source .venv/bin/activate                 # Windows: .venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+cp .env.example .env                      # Configure GEMINI_API_KEY
+```
+
+### Running an Audit
+
+```bash
+python agent.py \
+  --repo https://github.com/OWNER/REPOSITORY \
+  --output report.json \
+  --trace-output trace.jsonl \
+  --max-steps 40 \
+  --timeout-seconds 600
+```
+
+### CLI Options
+
+| Flag | Required | Default | Description |
+|---|:---:|:---:|---|
+| `--repo` | Yes | - | Public GitHub HTTPS URL |
+| `--output` | Yes | - | Destination path for JSON report |
+| `--trace-output` | No | None | Optional JSONL path for redacted tool-call trace |
+| `--max-steps` | No | 40 | Maximum turns before audit forces completion |
+| `--timeout-seconds`| No | 600 | Global audit deadline in seconds (max 600) |
+| `--no-critic` | No | False | Skip the LLM critic verification pass |
+| `--debug` | No | False | Output full traceback on fatal errors (secrets remain redacted) |
+
+---
 
 ## Architecture
 
-| File | Responsibility |
-|---|---|
-| `agent.py` | CLI, validated clone lifecycle, timeouts, JSON/trace output |
-| `agent_loop.py` | Dynamic LLM/tool loop, step limit, trace, partial results |
-| `llm.py` | Gemini SDK setup, manual function calling, transient retries and model fallback |
-| `prompts.py` | Audit scope, evidence rules, precision and severity guidance |
-| `tools.py` | GitHub URL validation, safe clone, redaction, read-only inspection tools |
-| `report.py` | Finding schema validation, evidence verification, de-duplication, JSON writing |
-| `main.py` | Small reusable `generate_text(prompt)` helper for other Python code |
-| `tests/` | Local tests; they mock provider calls and do not require a key or network |
-
-The agent does not pre-run an inspection checklist. It gives the model a repository-ready message and tool schemas, then executes the selected tool calls itself. Automatic SDK function execution is disabled. Tool output is capped and redacted before it returns to the model.
-
-## Safety and evidence
-
-- The URL validator accepts only `https://github.com/OWNER/REPOSITORY` URLs.
-- Git is invoked with an argument list, a timeout, prompts disabled, and credential helpers disabled.
-- Repository paths are resolved and checked for traversal and symlinks outside the clone; `.git` internals are not readable through file tools.
-- `read_file` numbers lines, caps output, and rejects binary or oversized files. `search_code` limits pattern size, files, bytes, and matches.
-- File findings require a prior `read_file`, a valid line if supplied, and a snippet found in the redacted file contents. Missing-file findings require a prior `list_files` call.
-- Remote properties such as branch protection are not inferred from local files. Optional files are not defects when an equivalent is present.
-- The cloned repository is never executed, installed, or modified.
-
-## Tests and lint
-
-```bash
-python -m pytest -q tests
-ruff check .
+```mermaid
+flowchart TD
+    CLI["CLI (agent.py)"] --> Validate["URL & Path Validation"]
+    Validate --> Clone["Safe Shallow Clone (--filter=blob:limit=2m)"]
+    Clone --> Workspace["Read-Only Workspace (tools.py)"]
+    Workspace --> Loop["Agent Control Loop (agent_loop.py)"]
+    Loop --> Router["ModelRouter (llm.py)"]
+    Router --> Primary["Primary: gemini-3.8-flash"]
+    Router -. Fallback on 503/429/404 .-> Fallback1["gemini-3.6-flash"]
+    Router -.-> Fallback2["gemini-3.5-flash-lite"]
+    Router -.-> Fallback3["gemini-3.1-flash-lite"]
+    Loop --> Tools["Read-Only Tools: scan_secrets, parse_manifest, list_workflows..."]
+    Tools --> FindingStore["FindingStore Verification (report.py)"]
+    FindingStore --> Critic["Critic Verification Pass (LLM_CRITIC_MODEL)"]
+    Critic --> Report["JSON Report (report.json)"]
 ```
 
-Tests cover path traversal, redaction, tool output, workflow parsing, report evidence and de-duplication, dynamic tool dispatch, retries, and CLI behavior. They use local temporary fixtures and mocked Gemini responses.
+### Core Architecture Principles
+1. **Plain Python Execution Loop**: Zero dependencies on heavyweight orchestration libraries. The loop directly coordinates prompt generation, function-calling serialization, error backoff, tool execution, and finding validation.
+2. **Dynamic Tool Calling**: No hardcoded checklist or pre-run scripts. The model explores the repository dynamically based on findings (e.g. investigating manifests after seeing `package.json` or running `git_show` after seeing suspicious commits).
+3. **Resilient Model Health Tracking (`ModelRouter`)**: Tracks availability, 429 rate-limit cooldowns, and 404 model retirement. Models recovering from rate limits automatically return to primary priority without permanent downgrade.
+4. **Critic Verification Pass**: Every candidate finding is independently reviewed by `LLM_CRITIC_MODEL` against extracted surrounding context to eliminate false positives and catch compensating controls.
+5. **Defense-in-Depth Safety**:
+   - Shallow clone with `--filter=blob:limit=2m`, `--no-recurse-submodules`, and `MAX_REPO_MB` size guards.
+   - Isolated worker process with timeout for ReDoS defense in `search_code`.
+   - Comprehensive secret pattern redaction (JWT, Stripe, SendGrid, Twilio, GCP/Azure service accounts, DB connection strings).
+   - Prompt injection defense: repository contents are strictly formatted as tool data messages.
 
-## GitHub Actions CI/CD
+---
 
-`.github/workflows/ci-cd.yml` runs Ruff and the test suite on pushes to `main`, pull requests, and manual runs, using Python 3.10, 3.11, and 3.12. The workflow needs no Gemini API key. Actions are pinned to full commit SHAs, and the workflow grants read-only repository access to the check jobs.
+## Configuration Reference
 
-Pushing a version tag such as `v1.0.0` runs the same checks and, if they pass, publishes a source archive as a GitHub Release. This command publishes the release:
+All settings can be configured via environment variables or `.env`:
 
-```bash
-git tag -a v1.0.0 -m "v1.0.0"
-git push origin v1.0.0
+| Variable | Default | Description |
+|---|---|---|
+| `GEMINI_API_KEY` | - | Google Gemini API Key |
+| `LLM_PROVIDER` | `gemini` | `gemini` or `openai_compatible` |
+| `LLM_MODEL` | `gemini-3.8-flash` | Primary model ID |
+| `LLM_FALLBACK_MODELS` | `gemini-3.6-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite` | Priority-ordered fallback models |
+| `LLM_CRITIC_MODEL` | `gemini-3.1-flash-lite` | Secondary verification critic model |
+| `LLM_THINKING_LEVEL` | `medium` | `low`, `medium`, `high`, or `minimal` |
+| `ENABLE_CRITIC` | `true` | Enable/disable critic verification pass |
+| `MAX_STEPS` | `40` | Maximum audit steps |
+| `MAX_REPO_MB` | `500` | Maximum allowable repo working tree size |
+| `LLM_TIMEOUT_MS` | `60000` | Per-call request timeout in milliseconds |
+| `LLM_MAX_RETRIES` | `4` | Transient error retry attempts per model |
+| `CLONE_TIMEOUT_SECONDS` | `120` | Maximum git clone duration |
+| `TOOL_TIMEOUT_SECONDS` | `30` | Default timeout for tool calls |
+
+---
+
+## Decision Logic & Safety Philosophy
+
+- **Snippet Verification**: Findings in files require verbatim snippet verification. The agent strips line-number prefixes automatically and confirms the snippet exists in the file before acceptance.
+- **Read-Only Enclosure**: Repository code is never executed, installed, or compiled. All inspection is static or via read-only git operations.
+- **Severity Rubric**:
+  - `critical`: Exploitable remote code execution, unauthenticated write permissions on main, or live secret credentials with broad scopes.
+  - `high`: Hardcoded passwords/API keys, missing build test gates on deployment pipelines, wildcard permissions.
+  - `medium`: Insecure CI flags (`continue-on-error: true`), unpinned production dependencies, missing branch protection.
+  - `low`: Repository hygiene, missing documentation, absence of optional files without evidence of direct outage or exploit.
+- **Deduplication**: Overlapping findings within ±3 lines in the same file or findings with >= 0.7 description similarity in the same category are automatically deduplicated.
+
+---
+
+## Sample Trace Excerpt
+
+```json
+{"step": 1, "tool": "list_files", "arguments": {}, "output": "app.py (140 bytes)\nREADME.md (500 bytes)"}
+{"step": 2, "tool": "read_file", "arguments": {"path": "app.py"}, "output": "1: import os\n2: DB_PASSWORD = \"[REDACTED]\"\n3: def connect(): ..."}
+{"step": 3, "tool": "report_violation", "arguments": {"rule_id": "SEC-001", "category": "security", "severity": "high", "file": "app.py", "line": 2, "description": "Hardcoded database password in application source.", "evidence": "DB_PASSWORD = \"[REDACTED]\"", "recommendation": "Load database credentials from secure environment variables or vault.", "snippet": "DB_PASSWORD = \"[REDACTED]\""}, "output": "Finding recorded."}
 ```
-
-The release job uses the built-in `GITHUB_TOKEN` with `contents: write`; no long-lived release token or PyPI credential is needed. Since this project is a command-line tool, the release artifact is its deployment package rather than a running web service. The GitHub CLI release command verifies the pushed tag before creating the release.
-
-## Limitations
-
-- Findings depend on the model and the evidence available in a public clone; review results before acting on them.
-- Rate limits or temporary model errors can leave a partial report.
-- The agent cannot inspect branch protection, repository secrets, or other remote-only settings.
-- Private repositories, SSH URLs, and local filesystem paths are intentionally unsupported.

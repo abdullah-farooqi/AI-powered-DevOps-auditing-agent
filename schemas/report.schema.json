@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DevOpsAuditReport",
+  "description": "Formal JSON schema for the DevOps repository auditing agent output report",
+  "type": "object",
+  "required": ["repository", "violations"],
+  "additionalProperties": false,
+  "properties": {
+    "repository": {
+      "type": "string",
+      "description": "Canonical HTTPS URL of the audited GitHub repository"
+    },
+    "violations": {
+      "type": "array",
+      "description": "List of evidenced DevOps and security violations identified during the audit",
+      "items": {
+        "type": "object",
+        "required": [
+          "rule_id",
+          "category",
+          "severity",
+          "file",
+          "line",
+          "description",
+          "evidence",
+          "recommendation"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "rule_id": {
+            "type": "string",
+            "pattern": "^[A-Z]+-\\d{3}$",
+            "description": "Violation identifier in PREFIX-NUMBER format (e.g. SEC-001, CI-002)"
+          },
+          "category": {
+            "type": "string",
+            "enum": [
+              "security",
+              "ci_cd",
+              "code_quality",
+              "repository_hygiene",
+              "licensing",
+              "collaboration",
+              "configuration",
+              "build"
+            ],
+            "description": "Broad category of the finding"
+          },
+          "severity": {
+            "type": "string",
+            "enum": ["critical", "high", "medium", "low"],
+            "description": "Assessed severity level"
+          },
+          "file": {
+            "type": ["string", "null"],
+            "description": "Repository-relative file path, or null for repository-wide absence"
+          },
+          "line": {
+            "type": ["integer", "null"],
+            "minimum": 1,
+            "description": "1-based starting line number in the file, or null"
+          },
+          "description": {
+            "type": "string",
+            "description": "Factual description of the defect"
+          },
+          "evidence": {
+            "type": "string",
+            "description": "Verifiable quote or structural proof from repository contents (never contains secrets)"
+          },
+          "recommendation": {
+            "type": "string",
+            "description": "Specific, actionable remediation advice"
+          }
+        }
+      }
+    }
+  }
+}

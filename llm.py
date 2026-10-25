@@ -30,6 +30,18 @@ try:
 except ImportError:
     httpcore = None
 
+# Ensure IPv4 resolution is preferred to prevent broken IPv6 connection hangs
+_orig_getaddrinfo = socket.getaddrinfo
+
+
+def _ipv4_preferred_getaddrinfo(host: Any, port: Any, family: int = 0, type: int = 0, proto: int = 0, flags: int = 0) -> Any:
+    if family in (0, socket.AF_UNSPEC):
+        family = socket.AF_INET
+    return _orig_getaddrinfo(host, port, family, type, proto, flags)
+
+
+socket.getaddrinfo = _ipv4_preferred_getaddrinfo
+
 load_dotenv()
 
 TRANSIENT_STATUS_CODES = {408, 429, 500, 502, 503, 504}

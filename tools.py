@@ -233,10 +233,7 @@ def _search_worker(
                         if len(snippet) > 200:
                             snippet = snippet[:197] + "..."
                         matches.append(redact(f"{relative}:{line_number}: {snippet}"))
-        if not matches:
-            result = "No matches found."
-        else:
-            result = "\n".join(matches)
+        result = "No matches found." if not matches else "\n".join(matches)
         if match_count > MAX_SEARCH_MATCHES:
             result += f"\n[{match_count - MAX_SEARCH_MATCHES} more matches omitted]"
         if skipped_large:
@@ -479,7 +476,7 @@ class RepoWorkspace:
             return "No GitHub Actions workflow files found."
 
         summaries: list[str] = []
-        for relative, path in workflows:
+        for relative, _path in workflows:
             try:
                 text = self.safe_path(relative).read_text(encoding="utf-8")
                 data = yaml.safe_load(text) or {}
@@ -663,7 +660,7 @@ class RepoWorkspace:
         matches: list[str] = []
         files_scanned = 0
         file_entries = self._walk_files()
-        for relative, path, size, is_symlink in file_entries:
+        for relative, _path, size, is_symlink in file_entries:
             if normalized_dir and not relative.startswith(normalized_dir):
                 continue
             if size > MAX_SEARCH_FILE_BYTES or is_symlink:
@@ -706,7 +703,7 @@ class RepoWorkspace:
         suspicious: list[str] = []
         ignored_env_samples = {".env.example", ".env.sample", ".env.template"}
 
-        for relative, path, size, is_symlink in self._walk_files():
+        for relative, _path, size, _is_symlink in self._walk_files():
             filename = relative.rsplit("/", 1)[-1].casefold()
             parts = [p.casefold() for p in relative.split("/")]
 

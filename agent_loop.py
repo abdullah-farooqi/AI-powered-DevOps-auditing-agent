@@ -186,7 +186,7 @@ def _run_critic_pass(
                     start = max(0, (line or 1) - 6)
                     end = min(len(lines), (line or 1) + 5)
                     surrounding_context = redact(
-                        "\n".join(f"{i}: {l}" for i, l in enumerate(lines[start:end], start + 1))
+                        "\n".join(f"{i}: {line_text}" for i, line_text in enumerate(lines[start:end], start + 1))
                     )
             except (OSError, UnicodeDecodeError, ValueError):
                 pass

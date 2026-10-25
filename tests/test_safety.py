@@ -157,7 +157,7 @@ def test_extended_redaction() -> None:
     # 8. Database connection URLs
     raw_db = "postgres://admin:super_secret_pw123@db.prod.internal:5432/main_db"
     redacted_db = redact(raw_db)
-    assert "postgres://admin:[REDACTED]@db.prod.internal:5432/main_db" == redacted_db
+    assert redacted_db == "postgres://admin:[REDACTED]@db.prod.internal:5432/main_db"
     assert "super_secret_pw123" not in redacted_db
 
 

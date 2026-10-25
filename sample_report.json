@@ -1,4 +1,25 @@
 {
-  "repository": "https://github.com/psf/requests.git",
-  "violations": []
+  "repository": "https://github.com/octocat/Hello-World",
+  "violations": [
+    {
+      "rule_id": "HYG-001",
+      "category": "repository_hygiene",
+      "severity": "low",
+      "file": null,
+      "line": null,
+      "description": "Repository does not define a standard OSS license file (LICENSE or LICENSE.md).",
+      "evidence": "No LICENSE, LICENSE.md, or COPYING file found in the repository root directory.",
+      "recommendation": "Add an open-source license such as MIT, Apache-2.0, or BSD to clarify usage terms."
+    },
+    {
+      "rule_id": "CI-001",
+      "category": "ci_cd",
+      "severity": "low",
+      "file": null,
+      "line": null,
+      "description": "Repository has no automated CI/CD continuous integration workflows configured.",
+      "evidence": "No workflow files discovered under .github/workflows directory.",
+      "recommendation": "Create GitHub Actions workflows under .github/workflows/ to automate testing and build validation."
+    }
+  ]
 }

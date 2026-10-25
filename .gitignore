@@ -1,9 +1,35 @@
+# Environment configuration
 .env
+.env.local
+
+# Virtual environments
 .venv/
 venv/
+ENV/
+env/
+
+# Python byte-code and caches
 __pycache__/
 *.py[cod]
+*.pyc
+
+# Testing and linting caches
 .pytest_cache/
 .ruff_cache/
+.coverage
+htmlcov/
+coverage.xml
+.mypy_cache/
+
+# Packaging and build outputs
+*.egg-info/
+dist/
+build/
+eggs/
+.eggs/
+
+# Agent run outputs (exclude generated runs, allow documentation samples)
 report.json
 trace.jsonl
+*.jsonl
+!docs/sample_trace.jsonl
