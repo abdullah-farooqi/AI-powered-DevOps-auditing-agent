@@ -13,7 +13,7 @@
     },
     {
       "rule_id": "CI-001",
-      "category": "ci_cd",
+      "category": "ci",
       "severity": "low",
       "file": null,
       "line": null,

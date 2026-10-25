@@ -35,14 +35,16 @@
           "category": {
             "type": "string",
             "enum": [
-              "security",
-              "ci_cd",
-              "code_quality",
               "repository_hygiene",
-              "licensing",
-              "collaboration",
+              "dependency_management",
+              "code_quality",
+              "testing",
+              "ci",
+              "ci_cd",
+              "security",
               "configuration",
-              "build"
+              "collaboration",
+              "build_release"
             ],
             "description": "Broad category of the finding"
           },

@@ -821,16 +821,25 @@ class RepoWorkspace:
             for candidate in ("poetry.lock", "uv.lock", "pdm.lock"):
                 if (parent / candidate).is_file():
                     lockfiles.append(candidate)
-            in_deps = False
-            for line in content.splitlines():
-                stripped = line.strip()
-                if stripped.startswith("["):
-                    in_deps = any(k in stripped for k in ("dependencies", "project.dependencies"))
-                    continue
-                if in_deps and stripped and not stripped.startswith("#"):
-                    m = re.match(r'^["\']?([A-Za-z0-9_.-]+)\s*([~=<>!@^].*?)?["\']?,?$', stripped)
+            m_list = re.search(r"dependencies\s*=\s*\[(.*?)\]", content, re.DOTALL)
+            if m_list:
+                for entry in re.findall(r'["\']([^"\']+)["\']', m_list.group(1)):
+                    m = re.match(r"^([A-Za-z0-9_.-]+)\s*([~=<>!@^].*?)?$", entry.strip())
                     if m:
                         pkg, spec = m.group(1), (m.group(2) or "").strip()
+                        dependencies.append((pkg, spec, classify_version(spec)))
+            in_poetry = False
+            for line in content.splitlines():
+                stripped = line.strip()
+                if stripped.startswith("[tool.poetry.dependencies"):
+                    in_poetry = True
+                    continue
+                elif stripped.startswith("["):
+                    in_poetry = False
+                if in_poetry and stripped and not stripped.startswith("#"):
+                    m_poetry = re.match(r'^([A-Za-z0-9_.-]+)\s*=\s*["\']([^"\']+)["\']', stripped)
+                    if m_poetry:
+                        pkg, spec = m_poetry.group(1), m_poetry.group(2).strip()
                         dependencies.append((pkg, spec, classify_version(spec)))
 
         elif filename == "pipfile":

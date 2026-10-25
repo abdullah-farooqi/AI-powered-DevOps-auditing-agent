@@ -514,3 +514,22 @@ def test_chat_observability_records_events_in_trace(
 
     assert reply.text == "recovered"
     assert any(event.get("type") == "model_retry" for event in trace)
+
+
+def test_thinking_config_and_provider_retry_after(monkeypatch: pytest.MonkeyPatch) -> None:
+    from llm import _get_thinking_config, _provider_retry_after
+
+    # Thinking levels
+    monkeypatch.setenv("LLM_THINKING_LEVEL", "low")
+    cfg_low = _get_thinking_config()
+    assert cfg_low is not None
+
+    monkeypatch.setenv("LLM_THINKING_LEVEL", "off")
+    cfg_off = _get_thinking_config()
+    assert cfg_off is None
+
+    # Retry-after headers
+    class HeaderError(Exception):
+        response = SimpleNamespace(headers={"Retry-After": "2.5"})
+
+    assert _provider_retry_after(HeaderError()) == 2.5

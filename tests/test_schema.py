@@ -60,7 +60,7 @@ def test_schema_validates_write_report_output(
     findings = [
         {
             "rule_id": "CI-001",
-            "category": "ci_cd",
+            "category": "ci",
             "severity": "critical",
             "file": ".github/workflows/deploy.yml",
             "line": 42,

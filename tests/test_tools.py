@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -348,3 +349,72 @@ jobs:
     assert "curl | sh execution" in summary
     assert "pip install of unpinned git URL" in summary
     assert "secrets used directly inside run command" in summary
+
+
+def test_parse_manifest_various_ecosystems(workspace: RepoWorkspace) -> None:
+    # package.json
+    (workspace.root / "package.json").write_text(
+        json.dumps({
+            "dependencies": {"express": "^4.18.2", "lodash": "*"},
+            "devDependencies": {"jest": "29.5.0"}
+        }),
+        encoding="utf-8"
+    )
+    res_pkg = workspace.parse_manifest("package.json")
+    assert "express (dependencies): ^4.18.2 (range)" in res_pkg
+    assert "lodash (dependencies): * (wildcard)" in res_pkg
+    assert "jest (devDependencies): 29.5.0 (pinned)" in res_pkg
+
+    # pyproject.toml
+    (workspace.root / "pyproject.toml").write_text(
+        '[project]\ndependencies = ["requests>=2.0", "fastapi==0.100.0"]\n',
+        encoding="utf-8"
+    )
+    res_pyproject = workspace.parse_manifest("pyproject.toml")
+    assert "requests: >=2.0 (range)" in res_pyproject
+    assert "fastapi: ==0.100.0 (pinned)" in res_pyproject
+
+    # Pipfile
+    (workspace.root / "Pipfile").write_text(
+        '[packages]\nrequests = "*"\nflask = "==2.0.1"\n',
+        encoding="utf-8"
+    )
+    res_pipfile = workspace.parse_manifest("Pipfile")
+    assert "requests: * (wildcard)" in res_pipfile
+    assert "flask: ==2.0.1 (pinned)" in res_pipfile
+
+    # Cargo.toml
+    (workspace.root / "Cargo.toml").write_text(
+        '[dependencies]\nserde = "1.0"\ntokio = { version = "1.0" }\n',
+        encoding="utf-8"
+    )
+    res_cargo = workspace.parse_manifest("Cargo.toml")
+    assert "serde: 1.0 (pinned)" in res_cargo
+
+    # go.mod
+    (workspace.root / "go.mod").write_text(
+        "module mymodule\n\ngo 1.20\n\nrequire (\n\tgithub.com/gin-gonic/gin v1.9.1\n)\n",
+        encoding="utf-8"
+    )
+    res_go = workspace.parse_manifest("go.mod")
+    assert "github.com/gin-gonic/gin: v1.9.1 (pinned)" in res_go
+
+    # composer.json
+    (workspace.root / "composer.json").write_text(
+        json.dumps({"require": {"monolog/monolog": "^2.0"}}),
+        encoding="utf-8"
+    )
+    res_composer = workspace.parse_manifest("composer.json")
+    assert "monolog/monolog (require): ^2.0 (range)" in res_composer
+
+
+def test_tools_dispatch_handles_unknown_and_safe_tools(workspace: RepoWorkspace) -> None:
+    from tools import RepositoryTools
+    repo_tools = RepositoryTools(workspace)
+
+    assert "unknown inspection tool" in repo_tools.dispatch("invalid_tool", {})
+    assert "README.md" in repo_tools.dispatch("list_files", {})
+    assert "No suspicious files" in repo_tools.dispatch("list_suspicious_files", {})
+    assert "Repository Equivalents" in repo_tools.dispatch("check_equivalents", {})
+    assert "Error:" in repo_tools.dispatch("git_show", {"commit": "not-a-hash"})
+    assert "Error:" in repo_tools.dispatch("git_history_search", {"pattern": ""})
