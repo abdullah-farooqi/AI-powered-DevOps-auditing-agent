@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import socket
+import ssl
 from types import SimpleNamespace
 
+import httpcore
+import httpx
 import pytest
 from google.genai import types
 
@@ -219,3 +223,114 @@ def test_create_client_requires_api_key(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     with pytest.raises(LLMError, match="GEMINI_API_KEY is missing"):
         llm.create_client()
+
+
+def test_is_transient_classification() -> None:
+    # Status codes
+    for code in (408, 429, 500, 502, 503, 504):
+        err = Exception(f"status {code}")
+        err.code = code
+        assert llm._is_transient(err) is True
+
+    # Non-transient status codes
+    for code in (400, 401, 403, 404):
+        err = Exception(f"status {code}")
+        err.code = code
+        assert llm._is_transient(err) is False
+
+    # Exception classes
+    assert (
+        llm._is_transient(
+            httpx.RemoteProtocolError("Server disconnected without sending a response")
+        )
+        is True
+    )
+    assert llm._is_transient(httpx.ConnectError("connection refused")) is True
+    assert llm._is_transient(httpcore.RemoteProtocolError("disconnected")) is True
+    assert llm._is_transient(socket.timeout("timed out")) is True  # noqa: UP041
+    assert llm._is_transient(ssl.SSLError("handshake failed")) is True
+
+
+def test_chat_404_moves_immediately_to_next_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LLM_MAX_RETRIES", "3")
+    monkeypatch.setenv("LLM_FALLBACK_MODELS", "gemini-3.5-flash-lite")
+
+    class NotFoundError(Exception):
+        code = 404
+
+    class ModelAPI:
+        def __init__(self):
+            self.calls = []
+
+        def generate_content(self, **kwargs):
+            self.calls.append(kwargs["model"])
+            if kwargs["model"] == "gemini-3.6-flash":
+                raise NotFoundError("model not found")
+            return _response_with_text("resumed from fallback")
+
+    models = ModelAPI()
+    reply = chat(
+        SimpleNamespace(models=models),
+        "system prompt",
+        [{"role": "user", "content": "hello"}],
+        [],
+    )
+    # 404 should not retry 3 times; it should immediately try fallback
+    assert models.calls == ["gemini-3.6-flash", "gemini-3.5-flash-lite"]
+    assert reply.model_used == "gemini-3.5-flash-lite"
+    assert reply.text == "resumed from fallback"
+
+
+def test_chat_model_specific_400_moves_to_next_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LLM_MAX_RETRIES", "3")
+    monkeypatch.setenv("LLM_FALLBACK_MODELS", "gemini-3.5-flash-lite")
+
+    class ModelIncompatibleError(Exception):
+        code = 400
+
+    class ModelAPI:
+        def __init__(self):
+            self.calls = []
+
+        def generate_content(self, **kwargs):
+            self.calls.append(kwargs["model"])
+            if kwargs["model"] == "gemini-3.6-flash":
+                raise ModelIncompatibleError("feature is not supported for this model")
+            return _response_with_text("resumed from fallback")
+
+    models = ModelAPI()
+    reply = chat(
+        SimpleNamespace(models=models),
+        "system prompt",
+        [{"role": "user", "content": "hello"}],
+        [],
+    )
+    assert models.calls == ["gemini-3.6-flash", "gemini-3.5-flash-lite"]
+    assert reply.model_used == "gemini-3.5-flash-lite"
+
+
+def test_chat_auth_error_fails_fast_without_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LLM_MAX_RETRIES", "3")
+    monkeypatch.setenv("LLM_FALLBACK_MODELS", "gemini-3.5-flash-lite")
+
+    class AuthError(Exception):
+        code = 401
+
+    class ModelAPI:
+        def __init__(self):
+            self.calls = []
+
+        def generate_content(self, **kwargs):
+            self.calls.append(kwargs["model"])
+            raise AuthError("API_KEY_INVALID")
+
+    models = ModelAPI()
+    with pytest.raises(LLMError, match="API_KEY_INVALID"):
+        chat(
+            SimpleNamespace(models=models),
+            "system prompt",
+            [{"role": "user", "content": "hello"}],
+            [],
+        )
+    # Must fail fast after 1 attempt on primary model without trying fallback
+    assert models.calls == ["gemini-3.6-flash"]

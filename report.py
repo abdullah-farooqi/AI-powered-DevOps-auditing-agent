@@ -50,7 +50,8 @@ REPORT_TOOL_SCHEMA: dict[str, Any] = {
     "name": "report_violation",
     "description": (
         "Record one evidence-backed repository finding. Read the cited file first. "
-        "For a file finding provide an exact short snippet from the redacted read_file output; "
+        "For a file finding provide an exact short snippet from the file WITHOUT line-number prefixes "
+        "(from the redacted read_file output); "
         "for a repository-wide absence finding use file=null and line=null after list_files."
     ),
     "parameters": {
@@ -64,7 +65,13 @@ REPORT_TOOL_SCHEMA: dict[str, Any] = {
             "description": {"type": "string"},
             "evidence": {"type": "string"},
             "recommendation": {"type": "string"},
-            "snippet": {"type": "string", "description": "Exact short quote from redacted file content; required when file is not null."},
+            "snippet": {
+                "type": "string",
+                "description": (
+                    "Exact short quote from redacted file content WITHOUT line-number prefixes; "
+                    "required when file is not null."
+                ),
+            },
         },
         "required": list(_FINDING_FIELDS),
     },
@@ -73,6 +80,10 @@ REPORT_TOOL_SCHEMA: dict[str, Any] = {
 
 def _normalize_whitespace(text: str) -> str:
     return " ".join(text.split())
+
+
+def _strip_line_numbers(text: str) -> str:
+    return "\n".join(re.sub(r"^\s*\d+:\s?", "", line) for line in text.splitlines())
 
 
 class FindingStore:
@@ -152,8 +163,14 @@ class FindingStore:
                 first = max(0, line - 3)
                 last = min(len(file_lines), line + 2)
                 check_text = redact("\n".join(file_lines[first:last]))
-            if _normalize_whitespace(snippet) not in _normalize_whitespace(check_text):
-                return "Error: snippet was not found in the cited file near the reported line."
+            normalized_check = _normalize_whitespace(check_text)
+            raw_snippet_norm = _normalize_whitespace(snippet)
+            stripped_snippet_norm = _normalize_whitespace(_strip_line_numbers(snippet))
+            if raw_snippet_norm not in normalized_check and stripped_snippet_norm not in normalized_check:
+                return (
+                    "Error: snippet was not found in the cited file near the reported line; "
+                    "snippet must be exact text from the file WITHOUT line-number prefixes."
+                )
 
         clean_finding = {
             "rule_id": rule_id,

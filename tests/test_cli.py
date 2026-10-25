@@ -57,7 +57,7 @@ def test_cli_success_writes_json_and_optional_trace(
     )
     assert result == 0
     assert json.loads(output.read_text(encoding="utf-8")) == {
-        "repository": "https://github.com/example/repo.git",
+        "repository": "https://github.com/example/repo",
         "violations": [],
     }
     assert json.loads(trace.read_text(encoding="utf-8").strip())["tool"] == "list_files"
@@ -71,6 +71,7 @@ def test_cli_writes_partial_report_and_returns_failure(
         "clone_public_repo",
         lambda url, destination, timeout_seconds: destination.mkdir(parents=True),
     )
+    # Zero inspection steps -> exits 1
     monkeypatch.setattr(
         agent,
         "run_agent_loop",
@@ -82,6 +83,49 @@ def test_cli_writes_partial_report_and_returns_failure(
     )
     assert result == 1
     assert json.loads(output.read_text(encoding="utf-8"))["violations"] == []
+
+
+def test_cli_partial_report_with_inspection_steps_exits_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    monkeypatch.setattr(
+        agent,
+        "clone_public_repo",
+        lambda url, destination, timeout_seconds: destination.mkdir(parents=True),
+    )
+    # Inspection steps completed -> exits 0 with warning on stderr
+    monkeypatch.setattr(
+        agent,
+        "run_agent_loop",
+        lambda *args, **kwargs: AuditResult(
+            findings=[
+                {
+                    "rule_id": "SEC-001",
+                    "category": "security",
+                    "severity": "high",
+                    "file": "app.py",
+                    "line": 1,
+                    "description": "Exposed key",
+                    "evidence": "key found",
+                    "recommendation": "remove key",
+                }
+            ],
+            trace=[{"step": 1, "tool": "read_file", "output": "app.py content"}],
+            completed=False,
+            steps=2,
+            error="Maximum audit step count reached",
+        ),
+    )
+    output = tmp_path / "partial.json"
+    result = agent.main(
+        ["--repo", "https://github.com/example/repo", "--output", str(output)]
+    )
+    assert result == 0
+    captured = capsys.readouterr()
+    assert "Warning: Audit incomplete; partial report was written" in captured.err
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert len(report["violations"]) == 1
+    assert report["violations"][0]["rule_id"] == "SEC-001"
 
 
 def test_cli_handles_missing_api_key_error(

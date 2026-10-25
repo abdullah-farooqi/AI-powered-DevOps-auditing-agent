@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 import random
 import re
+import socket
+import ssl
 import time
 import uuid
 from dataclasses import dataclass
@@ -16,11 +18,50 @@ from google.genai import types
 
 from tools import redact
 
+try:
+    import httpx
+except ImportError:
+    httpx = None
+
+try:
+    import httpcore
+except ImportError:
+    httpcore = None
+
 load_dotenv()
 
 TRANSIENT_STATUS_CODES = {408, 429, 500, 502, 503, 504}
 DEFAULT_MODEL = "gemini-3.6-flash"
 DEFAULT_FALLBACK_MODELS = "gemini-3.5-flash-lite,gemini-3.1-flash-lite"
+
+_transient_classes: list[type[BaseException]] = [
+    TimeoutError,
+    ConnectionError,
+    socket.timeout,
+    socket.gaierror,
+    ssl.SSLError,
+]
+
+if httpx is not None:
+    _transient_classes.extend(
+        [
+            httpx.TimeoutException,
+            httpx.NetworkError,
+            httpx.TransportError,
+            httpx.ProtocolError,
+        ]
+    )
+
+if httpcore is not None:
+    _transient_classes.extend(
+        [
+            httpcore.TimeoutException,
+            httpcore.NetworkError,
+            httpcore.ProtocolError,
+        ]
+    )
+
+TRANSIENT_EXCEPTION_CLASSES = tuple(set(_transient_classes))
 
 
 class LLMError(RuntimeError):
@@ -150,11 +191,74 @@ def _convert_messages(messages: list[dict[str, Any]]) -> list[types.Content]:
 
 
 def _is_transient(error: Exception) -> bool:
-    status_code = getattr(error, "code", None)
-    if status_code in TRANSIENT_STATUS_CODES:
+    for attr in ("code", "status_code"):
+        code = getattr(error, attr, None)
+        if isinstance(code, int) and code in TRANSIENT_STATUS_CODES:
+            return True
+    response = getattr(error, "response", None)
+    if response is not None:
+        for attr in ("status_code", "code"):
+            code = getattr(response, attr, None)
+            if isinstance(code, int) and code in TRANSIENT_STATUS_CODES:
+                return True
+
+    if isinstance(error, TRANSIENT_EXCEPTION_CLASSES):
         return True
+
+    if (
+        error.__cause__
+        and isinstance(error.__cause__, Exception)
+        and _is_transient(error.__cause__)
+    ):
+        return True
+    if (
+        error.__context__
+        and isinstance(error.__context__, Exception)
+        and _is_transient(error.__context__)
+    ):
+        return True
+
     error_name = type(error).__name__.lower()
-    return any(word in error_name for word in ("timeout", "connection", "network"))
+    error_msg = str(error).lower()
+    if any(word in error_name for word in ("timeout", "connection", "network", "protocol")):
+        return True
+    return any(
+        phrase in error_msg
+        for phrase in (
+            "server disconnected",
+            "connection reset",
+            "connection refused",
+            "timed out",
+            "remote protocol",
+        )
+    )
+
+
+def _is_model_unavailable(error: Exception) -> bool:
+    code = getattr(error, "code", None) or getattr(error, "status_code", None)
+    response = getattr(error, "response", None)
+    if response is not None and code is None:
+        code = getattr(response, "status_code", None) or getattr(response, "code", None)
+
+    msg = str(error).lower()
+    if code == 404 or "not_found" in msg or "not found" in msg:
+        return True
+
+    if code == 400:
+        model_specific_markers = (
+            "not supported for this model",
+            "model does not support",
+            "unsupported model",
+            "model not available",
+            "not available for model",
+            "unknown model",
+            "invalid model",
+            "is not found for api version",
+        )
+        if any(marker in msg for marker in model_specific_markers):
+            return True
+
+    return False
 
 
 def _provider_retry_after(error: Exception) -> float | None:
@@ -260,9 +364,11 @@ def chat(
                 break
             except Exception as exc:  # noqa: BLE001 - the SDK raises different transient transport types.
                 last_error = exc
+                if _is_model_unavailable(exc):
+                    break
                 # A 429 can carry a daily reset delay many hours long. Move to the
                 # next model immediately instead of sleeping past this audit's deadline.
-                if getattr(exc, "code", None) == 429:
+                if getattr(exc, "code", None) == 429 or getattr(exc, "status_code", None) == 429:
                     break
                 if not _is_transient(exc) or attempt + 1 >= attempts_per_model:
                     break
@@ -277,11 +383,12 @@ def chat(
         if response is not None:
             break
         if last_error is not None:
-            model_errors.append(f"{model_name}: {redact(str(last_error))[:700]}")
+            unavailable_note = " (model unavailable)" if _is_model_unavailable(last_error) else ""
+            model_errors.append(f"{model_name}: {redact(str(last_error))[:700]}{unavailable_note}")
         if (
             model_index + 1 >= len(_model_chain(requested_model))
             or last_error is None
-            or not _is_transient(last_error)
+            or not (_is_transient(last_error) or _is_model_unavailable(last_error))
         ):
             break
 

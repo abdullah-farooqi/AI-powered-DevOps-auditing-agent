@@ -131,9 +131,17 @@ def main(argv: list[str] | None = None) -> int:
                 "Gemini model changed from "
                 f"{event['from_model']} to {event['to_model']}; continuing with the existing audit context."
             )
+
+    inspection_steps = sum(
+        1 for event in result.trace if event.get("tool") not in (None, "finish_audit")
+    )
+
     if not result.completed:
-        detail = f" {result.error}" if result.error else ""
-        print(f"Audit incomplete; partial report was written.{detail}", file=sys.stderr)
+        detail = f": {result.error}" if result.error else ""
+        if inspection_steps > 0:
+            print(f"Warning: Audit incomplete; partial report was written{detail}", file=sys.stderr)
+            return 0
+        print(f"Audit failed; no inspection steps completed{detail}", file=sys.stderr)
         return 1
     return 0
 

@@ -88,12 +88,13 @@ def normalize_github_url(url: str) -> str:
         or not valid_part.fullmatch(repository)
     ):
         raise ValueError("The GitHub owner or repository name is invalid.")
-    return f"https://github.com/{owner}/{repository}.git"
+    return f"https://github.com/{owner}/{repository}"
 
 
 def clone_public_repo(url: str, destination: str | Path, timeout_seconds: int = 120) -> str:
     """Clone a validated public GitHub repository without invoking a shell."""
-    clone_url = normalize_github_url(url)
+    canonical_url = normalize_github_url(url)
+    clone_url = f"{canonical_url}.git"
     destination = Path(destination).resolve()
     env = os.environ.copy()
     env.update(
@@ -205,9 +206,14 @@ class RepoWorkspace:
         return sorted(entries, key=lambda item: item[0].casefold())
 
     def list_files(self, directory: str = "") -> str:
+        if not isinstance(directory, str):
+            return "Error: directory must be a string."
         normalized_directory = ""
         base = self.root
-        if directory:
+        trimmed_dir = directory.strip()
+        if trimmed_dir in ("", ".", "./"):
+            self.root_listing_called = True
+        else:
             try:
                 base = self.safe_path(directory)
             except ValueError as exc:
@@ -236,8 +242,6 @@ class RepoWorkspace:
             else:
                 lines.append(f"[truncated: showing {MAX_LIST_ENTRIES} of {total} files]")
         self.list_files_called = True
-        if not directory:
-            self.root_listing_called = True
         return redact("\n".join(lines) if lines else "No files found.")
 
     def _read_text(self, relative_path: str) -> tuple[Path, str]:

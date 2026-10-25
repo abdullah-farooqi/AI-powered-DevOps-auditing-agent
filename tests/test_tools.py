@@ -18,6 +18,28 @@ def test_list_files_skips_git_and_lists_sizes(workspace: RepoWorkspace) -> None:
     assert workspace.list_files_called
 
 
+def test_list_files_root_aliases_and_rejections(workspace: RepoWorkspace) -> None:
+    # "" treats as root
+    workspace.root_listing_called = False
+    assert "app.py" in workspace.list_files("")
+    assert workspace.root_listing_called is True
+
+    # "." treats as root
+    workspace.root_listing_called = False
+    assert "app.py" in workspace.list_files(".")
+    assert workspace.root_listing_called is True
+
+    # "./" treats as root
+    workspace.root_listing_called = False
+    assert "app.py" in workspace.list_files("./")
+    assert workspace.root_listing_called is True
+
+    # Traversals, git, and absolute paths are rejected
+    assert "Path escapes" in workspace.list_files("..")
+    assert "Reading .git" in workspace.list_files(".git")
+    assert "Absolute paths" in workspace.list_files("/root")
+
+
 def test_list_files_can_narrow_to_directory(workspace: RepoWorkspace) -> None:
     (workspace.root / "src").mkdir()
     (workspace.root / "src" / "main.py").write_text("pass\n", encoding="utf-8")
@@ -98,10 +120,10 @@ def test_redact_masks_common_secret_formats() -> None:
 
 def test_normalize_github_url() -> None:
     assert normalize_github_url("https://github.com/example/repo") == (
-        "https://github.com/example/repo.git"
+        "https://github.com/example/repo"
     )
     assert normalize_github_url("https://github.com/example/repo.git/") == (
-        "https://github.com/example/repo.git"
+        "https://github.com/example/repo"
     )
 
 

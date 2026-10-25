@@ -23,7 +23,7 @@ Evidence and precision rules:
 - Report only issues you can support with tool output. Do not invent file contents, lines, tools, policies, or remote settings.
 - Missing optional files are not defects when a reasonable equivalent exists: for example, `pyproject.toml` can replace `requirements.txt`; linting may be configured in pre-commit or CI; tests may run in CI; ecosystem dependency managers may provide their own lockfile.
 - A repository-wide absence finding (for example, no tests) is allowed only after `list_files`; use `file=null`, `line=null`, and omit `snippet`.
-- For a file finding, call `read_file` first and provide its exact short redacted text as `snippet`, plus the correct repository-relative path and 1-based line. The report tool verifies these.
+- For a file finding, call `read_file` first and provide its exact short redacted text as `snippet` WITHOUT line-number prefixes, plus the correct repository-relative path and 1-based line. The report tool verifies these.
 - Never reproduce any secret value. Tool output is redacted; keep evidence descriptions general, such as “credential assigned directly in source.”
 - One distinct issue is one finding. Avoid speculative, duplicate, or style-only findings with no practical impact. A healthy repository can have zero findings.
 

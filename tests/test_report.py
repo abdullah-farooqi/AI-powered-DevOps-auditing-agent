@@ -58,8 +58,35 @@ def test_bad_severity_and_mismatched_rule_category_are_rejected(
 def test_snippet_and_line_are_verified(workspace: RepoWorkspace) -> None:
     workspace.read_file("app.py")
     store = FindingStore(workspace)
-    assert "snippet was not found" in store.add(_finding(snippet="totally invented evidence"))
+    rejection = store.add(_finding(snippet="totally invented evidence"))
+    assert "snippet was not found" in rejection
+    assert "WITHOUT line-number prefixes" in rejection
     assert "past the end" in store.add(_finding(line=50))
+
+
+def test_numbered_multiline_snippet_and_clean_snippet_accepted(
+    workspace: RepoWorkspace,
+) -> None:
+    workspace.read_file("app.py")
+    store = FindingStore(workspace)
+    # Clean snippet accepted
+    clean_candidate = _finding(
+        rule_id="SEC-001",
+        category="security",
+        snippet='password = "[REDACTED]"',
+        line=1,
+    )
+    assert store.add(clean_candidate) == "Finding recorded."
+
+    # Numbered multi-line snippet accepted
+    numbered_candidate = _finding(
+        rule_id="SEC-002",
+        category="security",
+        description="Another issue",
+        snippet='1: password = "[REDACTED]"\n2: print("hello")',
+        line=1,
+    )
+    assert store.add(numbered_candidate) == "Finding recorded."
 
 
 def test_report_path_must_be_read_before_finding(workspace: RepoWorkspace) -> None:

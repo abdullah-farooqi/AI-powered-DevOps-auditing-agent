@@ -10,7 +10,7 @@ A plain-Python agent that inspects a public GitHub repository for defensible Dev
 - Verifies file findings against a file already read and a matching short snippet before adding them to the report.
 - Redacts common credentials in tool output, traces, and final findings.
 - Never executes code from the cloned repository or modifies the clone.
-- Writes partial findings if the model fails or reaches its step/time limit; incomplete runs exit nonzero.
+- Writes accepted findings incrementally: fatal errors exit nonzero, while audits reaching step/time limits after inspection steps completed write the report, warn on stderr, and exit 0.
 
 ## Requirements
 
@@ -54,7 +54,10 @@ python agent.py \
 
 If the active model is rate-limited or returns a transient server/network error, the agent tries each model in `LLM_FALLBACK_MODELS`. It sends the fallback the full current conversation, including prior tool results, and keeps using the model that succeeds for later turns. A fallback cannot help if all configured models are unavailable or their quotas are exhausted.
 
-Exit status is `0` when the audit finishes and the report is written. A partial report is still written after an LLM failure, timeout, or step limit, and the process exits nonzero with a warning. Clone, URL, configuration, and output-file failures also exit nonzero.
+### Exit-code and partial-result policy
+- **Fatal errors** (invalid URL, clone failure, missing API key, unwritable output, all models failing before ANY progress) exit nonzero with a clear message on stderr.
+- **Audits hitting the step limit or global timeout** write the report with all findings accepted so far, print a warning to stderr, and exit `0`.
+- **LLM unavailable mid-audit after tools have run** writes the partial report, warns on stderr, and exits `0`. It exits nonzero only if zero inspection steps completed.
 
 ## Report format
 
@@ -62,7 +65,7 @@ The report is UTF-8 JSON:
 
 ```json
 {
-  "repository": "https://github.com/OWNER/REPOSITORY.git",
+  "repository": "https://github.com/OWNER/REPOSITORY",
   "violations": [
     {
       "rule_id": "SEC-001",
