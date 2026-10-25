@@ -99,7 +99,9 @@ def test_search_code_reports_invalid_regex_and_rejects_nested_repetition(
     workspace: RepoWorkspace,
 ) -> None:
     assert "Invalid regex" in workspace.search_code("(")
-    assert "nested repetition" in workspace.search_code(r"(a+)+")
+    (workspace.root / "redos.txt").write_text("a" * 28 + "!", encoding="utf-8")
+    result = workspace.search_code(r"(a+)+$", timeout_seconds=0.5)
+    assert "timed out" in result
 
 
 def test_redact_masks_common_secret_formats() -> None:

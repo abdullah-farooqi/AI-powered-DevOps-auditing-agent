@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import fnmatch
 import json
+import multiprocessing as mp
 import os
 import re
 import subprocess
+import unicodedata
 from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import urlparse
@@ -30,11 +32,30 @@ _SECRET_PATTERNS = (
     (re.compile(r"\bAIza[0-9A-Za-z_-]{30,}\b"), "[REDACTED_GOOGLE_KEY]"),
     (re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b"), "[REDACTED_SLACK_TOKEN]"),
     (
+        re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"),
+        "[REDACTED_JWT]",
+    ),
+    (re.compile(r"\b[rs]k_(?:live|test)_[0-9a-zA-Z]{24,}\b"), "[REDACTED_STRIPE_KEY]"),
+    (re.compile(r"\bnpm_[A-Za-z0-9]{36,}\b"), "[REDACTED_NPM_TOKEN]"),
+    (re.compile(r"\b(?:AC|SK)[0-9a-fA-F]{32}\b"), "[REDACTED_TWILIO_KEY]"),
+    (re.compile(r"\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}\b"), "[REDACTED_SENDGRID_KEY]"),
+    (re.compile(r"\bkey-[0-9a-zA-Z]{32}\b"), "[REDACTED_MAILGUN_KEY]"),
+    (
+        re.compile(r'"private_key":\s*"(?:[^"\\]|\\.)*"'),
+        '"private_key": "[REDACTED_PRIVATE_KEY]"',
+    ),
+    (
         re.compile(
             r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----",
             re.DOTALL,
         ),
         "[REDACTED_PRIVATE_KEY]",
+    ),
+    (
+        re.compile(
+            r"\b((?:postgres|postgresql|mysql|mongodb|mongodb\+srv|redis|rediss|amqp|amqps):\/\/[^:\s\/]+:)([^@\s\/]+)(@[^/\s]+)"
+        ),
+        r"\g<1>[REDACTED]\g<3>",
     ),
 )
 _ASSIGNMENT_SECRET = re.compile(
@@ -58,15 +79,23 @@ def redact(text: str) -> str:
 
 def normalize_github_url(url: str) -> str:
     """Validate a public GitHub HTTPS repository URL and return its canonical URL."""
+    if not isinstance(url, str):
+        raise TypeError("Expected an HTTPS GitHub repository URL string.")
+
+    cleaned_url = unicodedata.normalize("NFKC", url.strip())
+
     try:
-        parsed = urlparse(url)
-        parts = parsed.path.strip("/").split("/")
+        parsed = urlparse(cleaned_url)
+        raw_path = parsed.path.strip("/")
+        parts = [p for p in raw_path.split("/") if p]
     except (TypeError, ValueError) as exc:
         raise ValueError("Expected an HTTPS GitHub repository URL.") from exc
 
+    hostname = (parsed.hostname or "").lower()
+
     if (
-        parsed.scheme != "https"
-        or parsed.hostname != "github.com"
+        parsed.scheme.lower() != "https"
+        or hostname != "github.com"
         or parsed.username is not None
         or parsed.password is not None
         or parsed.port not in (None, 443)
@@ -75,6 +104,11 @@ def normalize_github_url(url: str) -> str:
         or len(parts) != 2
     ):
         raise ValueError("Expected https://github.com/OWNER/REPOSITORY.")
+
+    try:
+        hostname.encode("ascii")
+    except UnicodeEncodeError as exc:
+        raise ValueError("Invalid hostname with non-ASCII unicode characters.") from exc
 
     owner, repository = parts
     repository = repository.removesuffix(".git")
@@ -116,6 +150,8 @@ def clone_public_repo(url: str, destination: str | Path, timeout_seconds: int = 
         "100",
         "--no-tags",
         "--single-branch",
+        "--filter=blob:limit=2m",
+        "--no-recurse-submodules",
         "--",
         clone_url,
         str(destination),
@@ -137,7 +173,81 @@ def clone_public_repo(url: str, destination: str | Path, timeout_seconds: int = 
     if result.returncode:
         detail = redact((result.stderr or result.stdout or "git clone failed").strip())
         raise CloneError(f"Could not clone public repository: {detail[:1200]}")
+
+    max_repo_mb = int(os.getenv("MAX_REPO_MB", "500"))
+    total_bytes = 0
+    for root_dir, _, files in os.walk(destination):
+        for f in files:
+            fp = Path(root_dir) / f
+            try:
+                if not fp.is_symlink():
+                    total_bytes += fp.stat().st_size
+            except OSError:
+                continue
+    if total_bytes > max_repo_mb * 1024 * 1024:
+        raise CloneError(
+            f"Cloned repository size ({total_bytes // (1024 * 1024)}MB) exceeds maximum limit of {max_repo_mb}MB."
+        )
+
     return clone_url
+
+
+def _search_worker(
+    queue: Any,
+    file_list: list[tuple[str, str, int]],
+    pattern: str,
+    file_glob: str,
+) -> None:
+    try:
+        compiled = re.compile(pattern)
+        matches: list[str] = []
+        match_count = 0
+        skipped_large = 0
+        files_scanned = 0
+        bytes_scanned = 0
+        scan_capped = False
+        for relative, full_path_str, size in file_list:
+            if not fnmatch.fnmatchcase(relative, file_glob):
+                continue
+            if files_scanned >= MAX_SEARCH_FILES or bytes_scanned + size > MAX_SEARCH_TOTAL_BYTES:
+                scan_capped = True
+                break
+            files_scanned += 1
+            bytes_scanned += size
+            if size > MAX_SEARCH_FILE_BYTES:
+                skipped_large += 1
+                continue
+            try:
+                data = Path(full_path_str).read_bytes()
+                if b"\x00" in data:
+                    continue
+                text = data.decode("utf-8")
+            except (OSError, UnicodeDecodeError, ValueError):
+                continue
+
+            for line_number, line in enumerate(text.splitlines(), 1):
+                for _ in compiled.finditer(line):
+                    match_count += 1
+                    if len(matches) < MAX_SEARCH_MATCHES:
+                        snippet = line.strip()
+                        if len(snippet) > 200:
+                            snippet = snippet[:197] + "..."
+                        matches.append(redact(f"{relative}:{line_number}: {snippet}"))
+        if not matches:
+            result = "No matches found."
+        else:
+            result = "\n".join(matches)
+        if match_count > MAX_SEARCH_MATCHES:
+            result += f"\n[{match_count - MAX_SEARCH_MATCHES} more matches omitted]"
+        if skipped_large:
+            result += f"\n[skipped {skipped_large} files larger than {MAX_SEARCH_FILE_BYTES} bytes]"
+        if scan_capped:
+            result += "\n[search scan truncated at the configured file or byte limit]"
+        queue.put(("ok", result))
+    except re.error as exc:
+        queue.put(("error", f"Invalid regex: {exc}"))
+    except Exception as exc:  # noqa: BLE001
+        queue.put(("error", f"Error: {exc}"))
 
 
 class RepoWorkspace:
@@ -300,64 +410,39 @@ class RepoWorkspace:
             rendered += "\n[" + "; ".join(notes) + "]"
         return rendered
 
-    def search_code(self, pattern: str, file_glob: str = "*") -> str:
+    def search_code(
+        self, pattern: str, file_glob: str = "*", timeout_seconds: float = 5.0
+    ) -> str:
         if not isinstance(pattern, str) or not pattern or len(pattern) > 200:
             return "Error: pattern must contain 1 to 200 characters."
-        if re.search(r"\([^)]*[+*][^)]*\)[+*{]", pattern):
-            return "Error: nested repetition is not allowed in search patterns."
         try:
-            compiled = re.compile(pattern)
+            re.compile(pattern)
         except re.error as exc:
             return f"Invalid regex: {exc}"
 
-        matches: list[str] = []
-        match_count = 0
-        skipped_large = 0
-        files_scanned = 0
-        bytes_scanned = 0
-        scan_capped = False
-        file_entries = self._walk_files()
-        for relative, path, size, _ in file_entries:
-            if not fnmatch.fnmatchcase(relative, file_glob):
-                continue
-            if files_scanned >= MAX_SEARCH_FILES or bytes_scanned + size > MAX_SEARCH_TOTAL_BYTES:
-                scan_capped = True
-                break
-            files_scanned += 1
-            bytes_scanned += size
-            if size > MAX_SEARCH_FILE_BYTES:
-                skipped_large += 1
-                continue
-            try:
-                safe_file = self.safe_path(relative)
-                if not safe_file.is_file():
-                    continue
-                data = safe_file.read_bytes()
-                if b"\x00" in data:
-                    continue
-                text = data.decode("utf-8")
-            except (OSError, UnicodeDecodeError, ValueError):
-                continue
+        file_list = [
+            (rel, str(self.safe_path(rel)), size)
+            for rel, _, size, is_sym in self._walk_files()
+            if not is_sym
+        ]
 
-            for line_number, line in enumerate(text.splitlines(), 1):
-                for _ in compiled.finditer(line):
-                    match_count += 1
-                    if len(matches) < MAX_SEARCH_MATCHES:
-                        snippet = line.strip()
-                        if len(snippet) > 200:
-                            snippet = snippet[:197] + "..."
-                        matches.append(redact(f"{relative}:{line_number}: {snippet}"))
-        if not matches:
-            result = "No matches found."
-        else:
-            result = "\n".join(matches)
-        if match_count > MAX_SEARCH_MATCHES:
-            result += f"\n[{match_count - MAX_SEARCH_MATCHES} more matches omitted]"
-        if skipped_large:
-            result += f"\n[skipped {skipped_large} files larger than {MAX_SEARCH_FILE_BYTES} bytes]"
-        if scan_capped or self.walk_truncated:
-            result += "\n[search scan truncated at the configured file or byte limit]"
-        return result
+        ctx = mp.get_context("fork" if hasattr(os, "fork") else "spawn")
+        queue = ctx.Queue()
+        process = ctx.Process(
+            target=_search_worker,
+            args=(queue, file_list, pattern, file_glob),
+        )
+        process.start()
+        process.join(timeout=timeout_seconds)
+        if process.is_alive():
+            process.terminate()
+            process.join(timeout=0.2)
+            return "Error: regex search timed out (possible ReDoS pattern)."
+
+        if not queue.empty():
+            _status, res = queue.get_nowait()
+            return res
+        return "Error: regex search worker terminated unexpectedly."
 
     def git_log(self, timeout_seconds: int = 10) -> str:
         command = ["git", "log", "-n", "30", "--pretty=format:%h|%an|%ad|%s", "--date=short"]

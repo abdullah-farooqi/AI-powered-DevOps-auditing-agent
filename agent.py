@@ -67,7 +67,36 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip the LLM critic verification pass",
     )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Print full traceback on fatal errors (secrets remain redacted)",
+    )
     return parser
+
+
+def validate_output_path(path_str: str, arg_name: str = "--output") -> Path:
+    raw_path = Path(path_str)
+    cwd = Path.cwd().resolve()
+    if not raw_path.is_absolute():
+        resolved = (cwd / raw_path).resolve()
+        try:
+            resolved.relative_to(cwd)
+        except ValueError as exc:
+            raise ValueError(f"{arg_name} path escapes current working directory: {path_str}") from exc
+    else:
+        resolved = raw_path.resolve()
+
+    for part in resolved.parts:
+        if part == ".git":
+            raise ValueError(f"{arg_name} cannot target .git directory.")
+    if resolved.name == ".git":
+        raise ValueError(f"{arg_name} cannot target .git.")
+
+    if resolved == (cwd / "agent.py").resolve():
+        raise ValueError(f"{arg_name} cannot overwrite agent.py.")
+
+    return resolved
 
 
 def _write_trace(trace: list[dict], path: str | Path) -> None:
@@ -91,21 +120,29 @@ def main(argv: list[str] | None = None) -> int:
         clone_timeout = _environment_integer("CLONE_TIMEOUT_SECONDS", 120)
         tool_timeout = _environment_integer("TOOL_TIMEOUT_SECONDS", 30)
         repository_url = normalize_github_url(args.repo)
+        output_path = validate_output_path(args.output, "--output")
+        trace_path = (
+            validate_output_path(args.trace_output, "--trace-output")
+            if args.trace_output
+            else None
+        )
     except ValueError as exc:
         parser.error(str(exc))
 
-    output_path = Path(args.output)
-    trace_path = Path(args.trace_output) if args.trace_output else None
     if trace_path is not None and output_path.resolve() == trace_path.resolve():
         parser.error("--output and --trace-output must be different paths")
 
     try:
         global_deadline = time.monotonic() + args.timeout_seconds
+        remaining = global_deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("Global audit timeout reached before cloning the repository.")
+
         with tempfile.TemporaryDirectory(prefix="devops-audit-") as temporary_root:
             clone_path = Path(temporary_root) / "repository"
             clone_budget = min(
                 clone_timeout,
-                max(1, int(global_deadline - time.monotonic())),
+                max(1, int(remaining)),
             )
             clone_public_repo(repository_url, clone_path, timeout_seconds=clone_budget)
             remaining = global_deadline - time.monotonic()
@@ -124,8 +161,21 @@ def main(argv: list[str] | None = None) -> int:
         write_report(repository_url, result.findings, output_path)
         if trace_path is not None:
             _write_trace(result.trace, trace_path)
-    except (ValueError, CloneError, LLMError, OSError) as exc:
-        print(redact(f"Audit failed: {exc}"), file=sys.stderr)
+    except (ValueError, CloneError, LLMError, OSError, TimeoutError) as exc:
+        if args.debug:
+            import traceback
+
+            print(redact(traceback.format_exc()), file=sys.stderr)
+        else:
+            print(redact(f"Audit failed: {exc}"), file=sys.stderr)
+        return 1
+    except Exception:  # noqa: BLE001
+        if args.debug:
+            import traceback
+
+            print(redact(traceback.format_exc()), file=sys.stderr)
+        else:
+            print(redact("Audit failed due to an unexpected error."), file=sys.stderr)
         return 1
 
     print(f"Report written to {output_path} ({len(result.findings)} finding(s)).")

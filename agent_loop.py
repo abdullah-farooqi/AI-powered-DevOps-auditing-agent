@@ -206,6 +206,7 @@ def _run_critic_pass(
                 [{"role": "user", "content": critic_user_prompt}],
                 [],
                 model=critic_model,
+                temperature=0.1,
                 request_timeout_ms=timeout_ms,
             )
             raw_text = reply.text.strip()

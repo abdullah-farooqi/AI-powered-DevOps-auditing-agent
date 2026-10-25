@@ -455,6 +455,7 @@ def _chat_openai_compatible(
     model: str | None = None,
     base_url: str | None = None,
     api_key: str | None = None,
+    temperature: float = 0.0,
     timeout_ms: int = 60_000,
 ) -> LLMReply:
     url = (
@@ -468,7 +469,7 @@ def _chat_openai_compatible(
     payload: dict[str, Any] = {
         "model": chosen_model,
         "messages": _convert_messages_openai(system_prompt, messages),
-        "temperature": 0.1,
+        "temperature": temperature,
     }
     tools = _convert_tools_openai(tool_schemas)
     if tools:
@@ -571,6 +572,7 @@ def chat(
     tool_schemas: list[dict[str, Any]],
     *,
     model: str | None = None,
+    temperature: float = 0.0,
     request_timeout_ms: int | None = None,
     deadline_monotonic: float | None = None,
     router: ModelRouter | None = None,
@@ -586,6 +588,7 @@ def chat(
             messages,
             tool_schemas,
             model=requested_model,
+            temperature=temperature,
             timeout_ms=request_timeout_ms or _positive_int("LLM_TIMEOUT_MS", 60_000),
         )
 
@@ -651,7 +654,7 @@ def chat(
                 "system_instruction": system_prompt,
                 "tools": function_tools,
                 "automatic_function_calling": types.AutomaticFunctionCallingConfig(disable=True),
-                "temperature": 0.1,
+                "temperature": temperature,
                 "max_output_tokens": 8192,
                 "http_options": types.HttpOptions(
                     timeout=attempt_timeout_ms,
