@@ -112,3 +112,38 @@ def test_empty_report_is_valid_json_and_secret_safe(
         "repository": "https://github.com/example/healthy",
         "violations": [],
     }
+
+
+def test_snippet_with_line_prefixes_and_multiline_is_accepted(
+    workspace: RepoWorkspace,
+) -> None:
+    workspace.read_file("app.py")
+    store = FindingStore(workspace)
+    candidate = _finding(
+        line=1,
+        snippet='1: password = "[REDACTED]"\n2: print("hello")',
+    )
+    assert store.add(candidate) == "Finding recorded."
+    assert len(store.findings) == 1
+
+
+def test_lenient_rule_id_and_category_normalization(workspace: RepoWorkspace) -> None:
+    workspace.read_file("app.py")
+    store = FindingStore(workspace)
+    candidate = _finding(
+        rule_id="sec-1",
+        category="CI/CD",
+        snippet='password = "[REDACTED]"',
+    )
+    # SEC rule prefix does not match CI/CD category
+    assert "does not match" in store.add(candidate)
+
+    # SEC rule prefix with uppercase category
+    candidate2 = _finding(
+        rule_id="sec-1",
+        category="Security",
+        snippet='password = "[REDACTED]"',
+    )
+    assert store.add(candidate2) == "Finding recorded."
+    assert store.findings[0]["rule_id"] == "SEC-001"
+    assert store.findings[0]["category"] == "security"

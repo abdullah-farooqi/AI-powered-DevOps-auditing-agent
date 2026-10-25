@@ -80,7 +80,7 @@ The report is UTF-8 JSON:
 
 Allowed categories are `repository_hygiene`, `dependency_management`, `code_quality`, `testing`, `ci`, `security`, `configuration`, `collaboration`, and `build_release`. Severity is `critical`, `high`, `medium`, or `low`. `file` and `line` may be `null` for repository-wide absence findings. The evidence snippet used for validation is not included in the final report. A healthy repository can produce an empty `violations` list.
 
-[`sample_report.json`](sample_report.json) is an authentic completed audit report for the public `psf/requests` repository.
+[`sample_report.json`](sample_report.json) is an authentic completed audit report for the public `abdullah-farooqi/Food_Delivery_App` repository.
 
 ## Architecture
 

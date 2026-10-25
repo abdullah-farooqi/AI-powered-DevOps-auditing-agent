@@ -26,6 +26,15 @@ def test_list_files_can_narrow_to_directory(workspace: RepoWorkspace) -> None:
     assert "README.md" not in result
 
 
+def test_list_files_with_dot_directory(workspace: RepoWorkspace) -> None:
+    result = workspace.list_files(".")
+    assert "app.py" in result
+    assert "README.md" in result
+    assert workspace.root_listing_called
+    result_slash = workspace.list_files("./")
+    assert "app.py" in result_slash
+
+
 def test_list_files_caps_results(repo_root: Path) -> None:
     for index in range(505):
         (repo_root / f"item-{index:03}.txt").write_text("x", encoding="utf-8")

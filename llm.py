@@ -153,8 +153,26 @@ def _is_transient(error: Exception) -> bool:
     status_code = getattr(error, "code", None)
     if status_code in TRANSIENT_STATUS_CODES:
         return True
-    error_name = type(error).__name__.lower()
-    return any(word in error_name for word in ("timeout", "connection", "network"))
+    error_text = f"{type(error).__name__} {error}".lower()
+    transient_words = (
+        "timeout",
+        "connection",
+        "network",
+        "disconnect",
+        "protocol",
+        "reset",
+        "transport",
+        "broken pipe",
+        "remote end closed",
+        "eof",
+        "temporarily unavailable",
+        "service unavailable",
+        "gateway timeout",
+        "resource exhausted",
+        "rate limit",
+        "too many requests",
+    )
+    return any(word in error_text for word in transient_words)
 
 
 def _provider_retry_after(error: Exception) -> float | None:

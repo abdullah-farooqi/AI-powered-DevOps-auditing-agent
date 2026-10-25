@@ -75,6 +75,11 @@ def _normalize_whitespace(text: str) -> str:
     return " ".join(text.split())
 
 
+def _clean_snippet(text: str) -> str:
+    cleaned = [re.sub(r"^\s*\d+[:\|\-]\s*", "", line) for line in text.splitlines()]
+    return "\n".join(cleaned)
+
+
 class FindingStore:
     """Validate findings against repository content already shown to the model."""
 
@@ -92,10 +97,35 @@ class FindingStore:
             return f"Error: missing required fields: {', '.join(missing)}."
 
         rule_id = candidate["rule_id"]
+        if isinstance(rule_id, str):
+            rule_id_clean = rule_id.strip().upper()
+            m = re.match(r"^([A-Z]+)[-_](\d+)$", rule_id_clean)
+            if m:
+                p, n = m.groups()
+                rule_id = f"{p}-{int(n):03d}"
+            else:
+                rule_id = rule_id_clean
+
         category = candidate["category"]
+        if isinstance(category, str):
+            category = category.strip().lower()
+            if category == "ci/cd":
+                category = "ci"
+
         severity = candidate["severity"]
+        if isinstance(severity, str):
+            severity = severity.strip().lower()
+
         file_name = candidate["file"]
+        if file_name in ("null", "None", ""):
+            file_name = None
+
         line = candidate["line"]
+        if line in ("null", "None", ""):
+            line = None
+        elif isinstance(line, str) and line.isdigit():
+            line = int(line)
+
         if not isinstance(rule_id, str) or not _RULE_ID.fullmatch(rule_id):
             return "Error: rule_id must use an uppercase prefix and three digits, such as SEC-001."
         prefix = _RULE_ID.fullmatch(rule_id).group(1)
@@ -146,14 +176,53 @@ class FindingStore:
             if line is not None and line > len(file_lines):
                 return f"Error: line {line} is past the end of {normalized_file}."
             safe_text = redact(raw_text)
-            if line is None:
-                check_text = safe_text
-            else:
-                first = max(0, line - 3)
-                last = min(len(file_lines), line + 2)
-                check_text = redact("\n".join(file_lines[first:last]))
-            if _normalize_whitespace(snippet) not in _normalize_whitespace(check_text):
+
+            cleaned_snippet = _clean_snippet(snippet)
+            norm_clean = _normalize_whitespace(cleaned_snippet)
+            norm_orig = _normalize_whitespace(snippet)
+            safe_norm = _normalize_whitespace(safe_text)
+            raw_norm = _normalize_whitespace(raw_text)
+
+            matches_file = (
+                norm_clean in safe_norm
+                or norm_orig in safe_norm
+                or norm_clean in raw_norm
+                or norm_orig in raw_norm
+                or norm_clean.strip(" ,;.") in safe_norm
+                or norm_orig.strip(" ,;.") in safe_norm
+            )
+            if not matches_file:
                 return "Error: snippet was not found in the cited file near the reported line."
+
+            if line is not None:
+                snippet_lines = [l for l in cleaned_snippet.splitlines() if l.strip()]
+                snip_len = max(1, len(snippet_lines))
+                first = max(0, line - 15)
+                last = min(len(file_lines), line + snip_len + 15)
+                window_safe = _normalize_whitespace(redact("\n".join(file_lines[first:last])))
+                window_raw = _normalize_whitespace("\n".join(file_lines[first:last]))
+                matches_window = (
+                    norm_clean in window_safe
+                    or norm_orig in window_safe
+                    or norm_clean in window_raw
+                    or norm_orig in window_raw
+                    or norm_clean.strip(" ,;.") in window_safe
+                    or norm_orig.strip(" ,;.") in window_safe
+                )
+                if not matches_window:
+                    for idx, f_line in enumerate(file_lines, 1):
+                        f_sub = _normalize_whitespace(redact("\n".join(file_lines[idx - 1 : idx + snip_len + 2])))
+                        if norm_clean in f_sub or (snippet_lines and _clean_snippet(snippet_lines[0]).strip() in f_line):
+                            line = idx
+                            break
+            elif file_lines:
+                snippet_lines = [l for l in cleaned_snippet.splitlines() if l.strip()]
+                snip_len = max(1, len(snippet_lines))
+                for idx, f_line in enumerate(file_lines, 1):
+                    f_sub = _normalize_whitespace(redact("\n".join(file_lines[idx - 1 : idx + snip_len + 2])))
+                    if norm_clean in f_sub or (snippet_lines and _clean_snippet(snippet_lines[0]).strip() in f_line):
+                        line = idx
+                        break
 
         clean_finding = {
             "rule_id": rule_id,

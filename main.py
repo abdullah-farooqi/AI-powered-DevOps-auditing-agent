@@ -33,3 +33,4 @@ def generate_text(prompt: str, model: str | None = None) -> str:
         return response.text
     finally:
         client.close()
+

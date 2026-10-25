@@ -173,6 +173,7 @@ def run_agent_loop(
     completed = False
     error_message: str | None = None
     no_tool_nudge_sent = False
+    finish_nudge_count = 0
     steps = 0
 
     client = create_client()
@@ -250,7 +251,8 @@ def run_agent_loop(
             for call in reply.tool_calls:
                 if call.name == "finish_audit":
                     gaps = _completion_gaps(workspace)
-                    if gaps:
+                    if gaps and finish_nudge_count < 1 and step < max_steps - 2:
+                        finish_nudge_count += 1
                         output = "Before finishing, " + "; ".join(gaps) + "."
                     else:
                         output = "Audit finished."

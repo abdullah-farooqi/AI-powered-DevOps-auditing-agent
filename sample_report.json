@@ -1,4 +1,15 @@
 {
-  "repository": "https://github.com/psf/requests.git",
-  "violations": []
+  "repository": "https://github.com/abdullah-farooqi/Food_Delivery_App.git",
+  "violations": [
+    {
+      "rule_id": "SEC-001",
+      "category": "security",
+      "severity": "medium",
+      "file": "app/google-services.json",
+      "line": 18,
+      "description": "Google Services configuration file google-services.json containing an active Firebase API key is committed directly to the repository.",
+      "evidence": "app/google-services.json",
+      "recommendation": "Remove google-services.json from version control, add it to .gitignore, and restrict API key permissions in the Google Cloud/Firebase console."
+    }
+  ]
 }

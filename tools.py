@@ -207,14 +207,15 @@ class RepoWorkspace:
     def list_files(self, directory: str = "") -> str:
         normalized_directory = ""
         base = self.root
-        if directory:
+        clean_dir = directory.strip() if isinstance(directory, str) else ""
+        if clean_dir and clean_dir not in {".", "./"}:
             try:
-                base = self.safe_path(directory)
+                base = self.safe_path(clean_dir)
             except ValueError as exc:
                 return f"Error: {exc}"
             if not base.is_dir():
                 return f"Error: not a directory: {directory}"
-            normalized_directory = self.normalize_relative_path(directory).rstrip("/") + "/"
+            normalized_directory = self.normalize_relative_path(clean_dir).rstrip("/") + "/"
 
         entries = [
             entry
@@ -236,7 +237,7 @@ class RepoWorkspace:
             else:
                 lines.append(f"[truncated: showing {MAX_LIST_ENTRIES} of {total} files]")
         self.list_files_called = True
-        if not directory:
+        if not clean_dir or clean_dir in {".", "./"}:
             self.root_listing_called = True
         return redact("\n".join(lines) if lines else "No files found.")
 
@@ -448,7 +449,12 @@ class RepoWorkspace:
                                     "pull_request_target" in trigger_names
                                     and uses.startswith("actions/checkout@")
                                 ):
-                                    checkout_ref = str(step.get("with", {}).get("ref", ""))
+                                    step_inputs = step.get("with", {})
+                                    checkout_ref = (
+                                        str(step_inputs.get("ref", ""))
+                                        if isinstance(step_inputs, dict)
+                                        else ""
+                                    )
                                     if re.search(
                                         r"github\.event\.pull_request\.(head\.(sha|ref)|head_sha)",
                                         checkout_ref,
@@ -539,5 +545,5 @@ class RepositoryTools:
             return f"Error: unknown inspection tool: {name}"
         try:
             return redact(str(handler()))
-        except TypeError as exc:
-            return redact(f"Error: invalid arguments for {name}: {exc}")
+        except Exception as exc:  # noqa: BLE001 - malformed repository data must not abort an audit.
+            return redact(f"Error: {name} failed ({type(exc).__name__}): {exc}")

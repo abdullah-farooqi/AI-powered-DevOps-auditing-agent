@@ -219,3 +219,12 @@ def test_create_client_requires_api_key(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     with pytest.raises(LLMError, match="GEMINI_API_KEY is missing"):
         llm.create_client()
+
+
+def test_is_transient_detects_disconnect_and_protocol_errors() -> None:
+    class RemoteProtocolError(Exception):
+        pass
+
+    assert llm._is_transient(RemoteProtocolError("Server disconnected without sending a response"))
+    assert llm._is_transient(Exception("connection reset by peer"))
+    assert not llm._is_transient(ValueError("invalid JSON syntax"))
