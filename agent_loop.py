@@ -4,11 +4,20 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from dataclasses import dataclass
 from typing import Any
 
-from llm import DEFAULT_MODEL, LLMError, ModelRouter, _model_chain, chat, create_client
+from llm import (
+    DEFAULT_CRITIC_MODEL,
+    DEFAULT_MODEL,
+    LLMError,
+    ModelRouter,
+    _model_chain,
+    chat,
+    create_client,
+)
 from prompts import AUDIT_SYSTEM_PROMPT
 from report import REPORT_TOOL_SCHEMA, FindingStore
 from tools import INSPECTION_TOOL_SCHEMAS, RepositoryTools, RepoWorkspace, redact
@@ -145,13 +154,98 @@ def _compact_messages(messages: list[dict[str, Any]]) -> None:
         total -= len(previous) - len(messages[index]["content"])
 
 
+def _run_critic_pass(
+    client: Any,
+    workspace: RepoWorkspace,
+    findings: list[dict[str, Any]],
+    trace: list[dict[str, Any]],
+    *,
+    critic_model: str,
+    timeout_ms: int = 30_000,
+) -> list[dict[str, Any]]:
+    if not findings:
+        return []
+
+    critic_system_prompt = (
+        "You are a strict DevOps audit critic. Review the proposed finding against the verified snippet "
+        "and surrounding file context. Determine whether the evidence genuinely supports the violation and "
+        "that no valid equivalent or compensating control exists. "
+        "Respond strictly with a single JSON object: {\"supported\": true|false, \"reason\": \"...\"}."
+    )
+
+    verified: list[dict[str, Any]] = []
+    for finding in findings:
+        surrounding_context = ""
+        file_path = finding.get("file")
+        line = finding.get("line")
+        if file_path:
+            try:
+                full_path = workspace.safe_path(file_path)
+                if full_path.is_file():
+                    lines = full_path.read_text(encoding="utf-8").splitlines()
+                    start = max(0, (line or 1) - 6)
+                    end = min(len(lines), (line or 1) + 5)
+                    surrounding_context = redact(
+                        "\n".join(f"{i}: {l}" for i, l in enumerate(lines[start:end], start + 1))
+                    )
+            except (OSError, UnicodeDecodeError, ValueError):
+                pass
+        else:
+            surrounding_context = workspace.check_equivalents()
+
+        critic_user_prompt = (
+            f"Finding candidate:\n{json.dumps(finding, indent=2)}\n\n"
+            f"Surrounding repository evidence:\n{surrounding_context}\n\n"
+            "Does the evidence support this finding as a real DevOps/security violation without false assumptions?"
+        )
+
+        try:
+            reply = chat(
+                client,
+                critic_system_prompt,
+                [{"role": "user", "content": critic_user_prompt}],
+                [],
+                model=critic_model,
+                request_timeout_ms=timeout_ms,
+            )
+            raw_text = reply.text.strip()
+            match = re.search(r"\{.*\}", raw_text, re.DOTALL)
+            decision = json.loads(match.group(0)) if match else json.loads(raw_text)
+
+            is_supported = decision.get("supported", True)
+            reason = decision.get("reason", "No reason provided")
+            if is_supported is False:
+                trace.append(
+                    {
+                        "type": "critic_drop",
+                        "rule_id": finding["rule_id"],
+                        "file": finding.get("file"),
+                        "line": finding.get("line"),
+                        "reason": redact(str(reason)),
+                    }
+                )
+                continue
+        except Exception as exc:  # noqa: BLE001
+            trace.append(
+                {
+                    "type": "critic_error",
+                    "rule_id": finding["rule_id"],
+                    "error": redact(str(exc))[:500],
+                }
+            )
+
+        verified.append(finding)
+    return verified
+
+
 def run_agent_loop(
     workspace: RepoWorkspace,
     repository_url: str,
     *,
-    max_steps: int = 25,
+    max_steps: int = 40,
     timeout_seconds: int = 600,
     tool_timeout_seconds: int = 30,
+    enable_critic: bool = True,
 ) -> AuditResult:
     """Run a bounded audit, letting Gemini decide each next tool call."""
     repo_tools = RepositoryTools(workspace, timeout_seconds=tool_timeout_seconds)
@@ -174,6 +268,8 @@ def run_agent_loop(
     completed = False
     error_message: str | None = None
     no_tool_nudge_sent = False
+    wrap_up_nudge_sent = False
+    finish_rejections = 0
     steps = 0
 
     client = create_client()
@@ -184,6 +280,19 @@ def run_agent_loop(
             if remaining <= 0:
                 error_message = f"Global audit timeout reached after {timeout_seconds} seconds."
                 break
+
+            if max_steps - step == 5 and not wrap_up_nudge_sent:
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "Budget notice: Exactly 5 steps remain in this audit. "
+                            "Please stop exploring new areas, report any remaining evidenced violations, and call finish_audit."
+                        ),
+                    }
+                )
+                wrap_up_nudge_sent = True
+
             try:
                 reply = chat(
                     client,
@@ -255,12 +364,34 @@ def run_agent_loop(
                 if call.name == "finish_audit":
                     gaps = _completion_gaps(workspace)
                     if gaps:
-                        output = "Before finishing, " + "; ".join(gaps) + "."
+                        finish_rejections += 1
+                        if finish_rejections >= 2:
+                            output = "Audit finished (coverage gaps recorded in trace)."
+                            should_finish = True
+                            trace.append(
+                                {
+                                    "step": step,
+                                    "type": "finish_unmet_gaps",
+                                    "gaps": gaps,
+                                }
+                            )
+                        else:
+                            output = "Before finishing, " + "; ".join(gaps) + "."
                     else:
                         output = "Audit finished."
                         should_finish = True
                 elif call.name == "report_violation":
+                    prev_adj_count = len(findings.adjustments)
                     output = findings.add(call.args)
+                    if len(findings.adjustments) > prev_adj_count:
+                        for adj in findings.adjustments[prev_adj_count:]:
+                            trace.append(
+                                {
+                                    "step": step,
+                                    "type": "severity_adjusted",
+                                    **adj,
+                                }
+                            )
                 else:
                     output = repo_tools.dispatch(call.name, call.args)
                 output = _tool_result_for_context(output)
@@ -294,11 +425,33 @@ def run_agent_loop(
                 break
         else:
             error_message = f"Maximum audit step count ({max_steps}) reached; writing partial findings."
+
+        final_findings = findings.findings
+        critic_active = (
+            enable_critic
+            and os.getenv("ENABLE_CRITIC", "true").strip().lower() not in ("false", "0", "no")
+        )
+        if critic_active and final_findings:
+            critic_model = (
+                os.getenv("LLM_CRITIC_MODEL", DEFAULT_CRITIC_MODEL).strip()
+                or DEFAULT_CRITIC_MODEL
+            )
+            critic_budget_ms = min(
+                30_000, max(5_000, int((deadline - time.monotonic()) * 1000))
+            )
+            final_findings = _run_critic_pass(
+                client,
+                workspace,
+                final_findings,
+                trace,
+                critic_model=critic_model,
+                timeout_ms=critic_budget_ms,
+            )
     finally:
         client.close()
 
     return AuditResult(
-        findings=findings.findings,
+        findings=final_findings,
         trace=trace,
         completed=completed,
         steps=steps,

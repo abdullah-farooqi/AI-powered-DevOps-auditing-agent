@@ -233,3 +233,116 @@ def test_insecure_repo_fixture_combines_a_fake_secret_and_bad_workflow(
     assert "[REDACTED]" in secret
     assert "pull_request_target" in workflow
     assert "write-all" in workflow
+
+
+def test_scan_secrets_detects_credentials_without_values(workspace: RepoWorkspace) -> None:
+    (workspace.root / "creds.py").write_text(
+        'AWS_KEY = "AKIA1234567890123456"\nGH = "ghp_abcdefghijklmnopqrstuvwxyz123456"\n',
+        encoding="utf-8",
+    )
+    result = workspace.scan_secrets()
+    assert "creds.py:1: aws_access_key" in result
+    assert "creds.py:2: github_token" in result
+    # Never leak secret values
+    assert "AKIA1234567890123456" not in result
+    assert "ghp_abcdefghijklmnopqrstuvwxyz123456" not in result
+
+
+def test_list_suspicious_files_detects_untracked_artifacts(workspace: RepoWorkspace) -> None:
+    (workspace.root / ".env").write_text("SECRET=123\n", encoding="utf-8")
+    (workspace.root / ".env.example").write_text("SECRET=\n", encoding="utf-8")
+    (workspace.root / "app.pyc").write_bytes(b"\x00\x01")
+    (workspace.root / "debug.log").write_text("log data\n", encoding="utf-8")
+    (workspace.root / "data.sqlite").write_bytes(b"SQLite format 3\x00")
+    (workspace.root / "id_rsa").write_text("private key", encoding="utf-8")
+
+    result = workspace.list_suspicious_files()
+    assert ".env" in result
+    assert ".env.example" not in result  # .env.example should be ignored
+    assert "app.pyc" in result
+    assert "debug.log" in result
+    assert "data.sqlite" in result
+    assert "id_rsa" in result
+
+
+def test_parse_manifest_classifies_dependencies(workspace: RepoWorkspace) -> None:
+    (workspace.root / "requirements.txt").write_text(
+        "requests==2.31.0\npytest>=8.0.0\nflask\nblack*\n",
+        encoding="utf-8",
+    )
+    result = workspace.parse_manifest("requirements.txt")
+    assert "requests: ==2.31.0 (pinned)" in result
+    assert "pytest: >=8.0.0 (range)" in result
+    assert "flask: [none] (unpinned)" in result
+    assert "black: * (wildcard)" in result
+    assert "No lockfile found" in result
+
+    # With lockfile present
+    (workspace.root / "requirements.lock").write_text("# lockfile\n", encoding="utf-8")
+    result_with_lock = workspace.parse_manifest("requirements.txt")
+    assert "Lockfile present: requirements.lock" in result_with_lock
+
+
+def test_git_show_validates_commit_and_runs_read_only(workspace: RepoWorkspace) -> None:
+    # Reject non-hex commit argument
+    assert "Error: commit must be a valid hex commit hash" in workspace.git_show("../escape")
+    assert "Error: commit must be a valid hex commit hash" in workspace.git_show("invalid;rm")
+
+    # Valid hex commit format (mocked subprocess result or no commit)
+    result = workspace.git_show("a1b2c3d4")
+    assert isinstance(result, str)
+
+
+def test_check_equivalents_detects_compensating_configs(workspace: RepoWorkspace) -> None:
+    (workspace.root / "pyproject.toml").write_text("[tool.ruff]\nline-length = 100\n", encoding="utf-8")
+    (workspace.root / "poetry.lock").write_text("# poetry lock\n", encoding="utf-8")
+    dep_dir = workspace.root / ".github"
+    dep_dir.mkdir(parents=True, exist_ok=True)
+    (dep_dir / "dependabot.yml").write_text("version: 2\n", encoding="utf-8")
+
+    result = workspace.check_equivalents()
+    assert "pyproject.toml" in result
+    assert "poetry.lock" in result
+    assert ".github/dependabot.yml" in result
+
+
+def test_list_workflows_richer_analysis(workspace: RepoWorkspace) -> None:
+    wf = workspace.root / ".github" / "workflows" / "deploy.yml"
+    wf.parent.mkdir(parents=True, exist_ok=True)
+    wf.write_text(
+        """name: Deploy
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+  push:
+    branches: [main]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo test
+  deploy:
+    runs-on: self-hosted
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: install
+        run: pip install git+https://github.com/org/repo
+      - name: run script
+        run: curl -sSL https://example.com/install.sh | bash
+      - name: echo secret
+        run: echo ${{ secrets.MY_SECRET }}
+""",
+        encoding="utf-8",
+    )
+    summary = workspace.list_workflows()
+    assert "workflow_run" in summary
+    assert "branches=['main']" in summary
+    assert "deploy or release job has no dependency on test jobs" in summary
+    assert "self-hosted runner on pull_request" not in summary  # on push, not pull_request
+    assert "GITHUB_TOKEN write scopes: contents" in summary
+    assert "curl | sh execution" in summary
+    assert "pip install of unpinned git URL" in summary
+    assert "secrets used directly inside run command" in summary

@@ -53,14 +53,19 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--max-steps",
         type=int,
-        default=os.getenv("MAX_STEPS", "25"),
-        help="Maximum LLM turns (default: MAX_STEPS or 25)",
+        default=os.getenv("MAX_STEPS", "40"),
+        help="Maximum LLM turns (default: MAX_STEPS or 40)",
     )
     parser.add_argument(
         "--timeout-seconds",
         type=int,
         default=MAX_GLOBAL_TIMEOUT_SECONDS,
         help="Global audit limit, at most 600 seconds",
+    )
+    parser.add_argument(
+        "--no-critic",
+        action="store_true",
+        help="Skip the LLM critic verification pass",
     )
     return parser
 
@@ -113,6 +118,7 @@ def main(argv: list[str] | None = None) -> int:
                 max_steps=args.max_steps,
                 timeout_seconds=max(1, int(remaining)),
                 tool_timeout_seconds=tool_timeout,
+                enable_critic=not args.no_critic,
             )
 
         write_report(repository_url, result.findings, output_path)

@@ -86,12 +86,23 @@ def _strip_line_numbers(text: str) -> str:
     return "\n".join(re.sub(r"^\s*\d+:\s?", "", line) for line in text.splitlines())
 
 
+def _token_set(text: str) -> set[str]:
+    return set(re.findall(r"\w+", text.lower()))
+
+
+def _jaccard_similarity(set_a: set[str], set_b: set[str]) -> float:
+    if not set_a or not set_b:
+        return 0.0
+    return len(set_a & set_b) / len(set_a | set_b)
+
+
 class FindingStore:
     """Validate findings against repository content already shown to the model."""
 
     def __init__(self, workspace: RepoWorkspace):
         self.workspace = workspace
         self.findings: list[dict[str, Any]] = []
+        self.adjustments: list[dict[str, Any]] = []
         self._finding_keys: set[tuple[str, str | None, int | None]] = set()
         self._description_keys: set[tuple[str | None, str]] = set()
 
@@ -172,10 +183,60 @@ class FindingStore:
                     "snippet must be exact text from the file WITHOUT line-number prefixes."
                 )
 
+        # Severity sanity rules:
+        adjusted_severity = severity
+        severity_reason = None
+        desc_lower = candidate["description"].lower()
+        evid_lower = candidate["evidence"].lower()
+
+        # 1. Exposed credential or private key: at least 'high'
+        if category == "security" and any(
+            w in desc_lower or w in evid_lower
+            for w in (
+                "credential",
+                "password",
+                "secret",
+                "private key",
+                "api_key",
+                "token",
+                "access_key",
+            )
+        ):
+            if severity in ("low", "medium"):
+                adjusted_severity = "high"
+                severity_reason = f"Adjusted severity from {severity} to high (exposed credentials/keys are at least high)"
+
+        # 2. Hygiene-only findings: at most 'medium'
+        elif category == "repository_hygiene":
+            if severity in ("critical", "high"):
+                adjusted_severity = "medium"
+                severity_reason = f"Adjusted severity from {severity} to medium (hygiene-only findings are at most medium)"
+
+        # 3. Absence findings for optional files: at most 'low' unless evidence of impact
+        elif file_name is None and category in ("repository_hygiene", "collaboration", "configuration"):
+            has_impact = any(
+                w in evid_lower
+                for w in ("exploit", "outage", "failure", "severe", "breach", "impact")
+            )
+            if not has_impact and severity in ("critical", "high", "medium"):
+                adjusted_severity = "low"
+                severity_reason = f"Adjusted severity from {severity} to low (optional absence findings without impact evidence are at most low)"
+
+        if severity_reason:
+            self.adjustments.append(
+                {
+                    "rule_id": rule_id,
+                    "file": normalized_file,
+                    "from_severity": severity,
+                    "to_severity": adjusted_severity,
+                    "reason": severity_reason,
+                }
+            )
+
         clean_finding = {
             "rule_id": rule_id,
             "category": category,
-            "severity": severity,
+            "severity": adjusted_severity,
             "file": redact(normalized_file) if normalized_file is not None else None,
             "line": line,
             "description": redact(candidate["description"].strip()),
@@ -183,6 +244,8 @@ class FindingStore:
             "recommendation": redact(candidate["recommendation"].strip()),
         }
 
+        # Deduplication checks:
+        # 1. Exact key match
         finding_key = (rule_id, clean_finding["file"], line)
         description_key = (
             clean_finding["file"],
@@ -190,6 +253,25 @@ class FindingStore:
         )
         if finding_key in self._finding_keys or description_key in self._description_keys:
             return "Duplicate finding ignored."
+
+        # 2. Same file with overlapping line range (within +-3 lines)
+        if clean_finding["file"] is not None and line is not None:
+            for existing in self.findings:
+                if (
+                    existing["file"] == clean_finding["file"]
+                    and existing["line"] is not None
+                    and abs(existing["line"] - line) <= 3
+                    and (existing["category"] == category or existing["rule_id"] == rule_id)
+                ):
+                    return "Duplicate finding ignored (overlapping line in same file)."
+
+        # 3. Highly similar description in the same category (Jaccard similarity >= 0.7)
+        new_tokens = _token_set(clean_finding["description"])
+        for existing in self.findings:
+            if existing["category"] == category:
+                existing_tokens = _token_set(existing["description"])
+                if _jaccard_similarity(new_tokens, existing_tokens) >= 0.7:
+                    return "Duplicate finding ignored (similar description in same category)."
 
         self._finding_keys.add(finding_key)
         self._description_keys.add(description_key)

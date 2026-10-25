@@ -69,24 +69,24 @@ def test_numbered_multiline_snippet_and_clean_snippet_accepted(
 ) -> None:
     workspace.read_file("app.py")
     store = FindingStore(workspace)
-    # Clean snippet accepted
+    # Numbered multi-line snippet accepted
+    numbered_candidate = _finding(
+        rule_id="SEC-001",
+        category="security",
+        snippet='1: password = "[REDACTED]"\n2: print("hello")',
+        line=1,
+    )
+    assert store.add(numbered_candidate) == "Finding recorded."
+
+    # Clean snippet accepted on fresh store
+    store2 = FindingStore(workspace)
     clean_candidate = _finding(
         rule_id="SEC-001",
         category="security",
         snippet='password = "[REDACTED]"',
         line=1,
     )
-    assert store.add(clean_candidate) == "Finding recorded."
-
-    # Numbered multi-line snippet accepted
-    numbered_candidate = _finding(
-        rule_id="SEC-002",
-        category="security",
-        description="Another issue",
-        snippet='1: password = "[REDACTED]"\n2: print("hello")',
-        line=1,
-    )
-    assert store.add(numbered_candidate) == "Finding recorded."
+    assert store2.add(clean_candidate) == "Finding recorded."
 
 
 def test_report_path_must_be_read_before_finding(workspace: RepoWorkspace) -> None:
@@ -139,3 +139,100 @@ def test_empty_report_is_valid_json_and_secret_safe(
         "repository": "https://github.com/example/healthy",
         "violations": [],
     }
+
+
+def test_severity_sanity_rules_adjust_severity(workspace: RepoWorkspace) -> None:
+    workspace.read_file("app.py")
+    store = FindingStore(workspace)
+
+    # 1. Exposed credential adjusted upward from low to high
+    cred_finding = _finding(
+        rule_id="SEC-001",
+        category="security",
+        severity="low",
+        description="A password token is exposed in code",
+        line=1,
+    )
+    assert store.add(cred_finding) == "Finding recorded."
+    assert store.findings[0]["severity"] == "high"
+    assert len(store.adjustments) == 1
+    assert store.adjustments[0]["from_severity"] == "low"
+    assert store.adjustments[0]["to_severity"] == "high"
+
+    # 2. Hygiene finding adjusted downward from critical to medium
+    workspace.list_files()
+    hyg_store = FindingStore(workspace)
+    hyg_finding = _finding(
+        rule_id="HYG-001",
+        category="repository_hygiene",
+        severity="critical",
+        file=None,
+        line=None,
+        snippet=None,
+        description="Junk build directory committed",
+        evidence="Found build output files in repository",
+    )
+    assert hyg_store.add(hyg_finding) == "Finding recorded."
+    assert hyg_store.findings[0]["severity"] == "medium"
+    assert hyg_store.adjustments[0]["to_severity"] == "medium"
+
+    # 3. Absence finding without impact adjusted downward to low
+    abs_store = FindingStore(workspace)
+    abs_finding = _finding(
+        rule_id="COLLAB-001",
+        category="collaboration",
+        severity="high",
+        file=None,
+        line=None,
+        snippet=None,
+        description="Missing PR template",
+        evidence="No template file found in .github directory",
+    )
+    assert abs_store.add(abs_finding) == "Finding recorded."
+    assert abs_store.findings[0]["severity"] == "low"
+
+
+def test_deduplication_overlapping_lines_and_description_similarity(
+    workspace: RepoWorkspace,
+) -> None:
+    (workspace.root / "app.py").write_text(
+        'password = "long-secret-value-123"\nx = 1\nprint("hello")\ny = 2\nz = 3\n',
+        encoding="utf-8",
+    )
+    workspace.read_file("app.py")
+    store = FindingStore(workspace)
+
+    # Record first finding on line 1
+    assert store.add(_finding(line=1)) == "Finding recorded."
+
+    # Overlapping line within +-3 in same category ignored
+    dup_overlap = _finding(
+        rule_id="SEC-002",
+        line=3,
+        description="Another secret in the same code block",
+        snippet='print("hello")',
+    )
+    assert store.add(dup_overlap) == "Duplicate finding ignored (overlapping line in same file)."
+
+    # Similar description in same category (Jaccard similarity >= 0.7) ignored
+    dup_desc = _finding(
+        rule_id="SEC-003",
+        file=None,
+        line=None,
+        snippet=None,
+        description="A credential is assigned directly in source.",
+        evidence="Another instance of direct credential assignment",
+    )
+    workspace.list_files()
+    assert store.add(dup_desc) == "Duplicate finding ignored (similar description in same category)."
+
+    # Dissimilar description or different category allowed
+    distinct_finding = _finding(
+        rule_id="QUAL-001",
+        category="code_quality",
+        severity="medium",
+        line=1,
+        description="Bare except clause used",
+        snippet='print("hello")',
+    )
+    assert store.add(distinct_finding) == "Finding recorded."

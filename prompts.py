@@ -21,11 +21,28 @@ Inspect these areas where the repository provides evidence:
 
 Evidence and precision rules:
 - Report only issues you can support with tool output. Do not invent file contents, lines, tools, policies, or remote settings.
-- Missing optional files are not defects when a reasonable equivalent exists: for example, `pyproject.toml` can replace `requirements.txt`; linting may be configured in pre-commit or CI; tests may run in CI; ecosystem dependency managers may provide their own lockfile.
-- A repository-wide absence finding (for example, no tests) is allowed only after `list_files`; use `file=null`, `line=null`, and omit `snippet`.
+- Missing optional files are not defects when a reasonable equivalent exists: for example, `pyproject.toml` can replace `requirements.txt`; linting may be configured in pre-commit, pyproject.toml, or CI; tests may run in CI; ecosystem dependency managers may provide their own lockfile. Use `check_equivalents` to verify before claiming something is missing.
+- Never report a missing optional file when `check_equivalents` or other evidence shows an equivalent solution is in place.
+- Never infer remote branch protection, secret scanning, or other remote-only GitHub settings not visible in repository files.
+- A repository-wide absence finding (for example, no tests anywhere in the repository) is allowed only after `list_files`; use `file=null`, `line=null`, and omit `snippet`.
 - For a file finding, call `read_file` first and provide its exact short redacted text as `snippet` WITHOUT line-number prefixes, plus the correct repository-relative path and 1-based line. The report tool verifies these.
 - Never reproduce any secret value. Tool output is redacted; keep evidence descriptions general, such as “credential assigned directly in source.”
-- One distinct issue is one finding. Avoid speculative, duplicate, or style-only findings with no practical impact. A healthy repository can have zero findings.
+- One distinct issue is one finding (one finding per distinct root cause). Avoid speculative, duplicate, or style-only findings with no practical impact. Prefer fewer, well-evidenced findings over speculative volume. A healthy repository can have zero findings.
+- Budget awareness: When told N steps remain, immediately stop exploring, report whatever evidenced findings have been verified, and call `finish_audit`.
+
+Worked examples:
+1. File-based violation (e.g. hard-coded credential found in config.py):
+   - Tool call: `read_file(path="config.py", start_line=10, end_line=15)`
+   - Tool output shows: `12: api_key = "[REDACTED]"`
+   - Report call: `report_violation(rule_id="SEC-001", category="security", severity="critical", file="config.py", line=12, description="API key hardcoded in configuration file.", evidence="The file assigns an API key string directly on line 12.", recommendation="Read the key from an environment variable or secret store.", snippet='api_key = "[REDACTED]"')` (Note: snippet has NO line-number prefix).
+2. Repository-wide absence finding (e.g. no tests in the entire project):
+   - Tool call: `list_files()` confirms no test directories, pytest config, or test files exist.
+   - Tool call: `check_equivalents()` confirms `test_runner_config: None detected`.
+   - Report call: `report_violation(rule_id="TEST-001", category="testing", severity="medium", file=null, line=null, description="No automated tests or test configurations exist in the repository.", evidence="Directory listing and check_equivalents show no test files or runners.", recommendation="Add automated unit or integration tests.")`
+3. Deciding NOT to report when an equivalent exists:
+   - Observation: `requirements.txt` does not exist.
+   - Tool call: `check_equivalents()` shows `pyproject.toml` and `poetry.lock` exist.
+   - Correct decision: Do NOT report a missing dependency manifest or missing lockfile, because Poetry provides equivalent dependency management.
 
 Use only these category values and matching rule prefixes:
 - `HYG-###` → `repository_hygiene`
@@ -39,9 +56,9 @@ Use only these category values and matching rule prefixes:
 - `BUILD-###` → `build_release`
 
 Severity guide:
-- `critical`: an exposed live credential or an immediately severe security exposure.
-- `high`: a plausible exploitable security or CI flaw, such as privileged `pull_request_target` executing attacker-controlled code or broad write permissions.
-- `medium`: a meaningful missing or ineffective test, validation gate, dependency control, or unsafe configuration.
-- `low`: limited repository hygiene or maintainability issues with modest impact.
+- `critical`: an exposed live credential or an immediately exploitable critical security vulnerability (e.g. leaked secret, unauthenticated remote code execution).
+- `high`: a plausible exploitable security or CI flaw, such as privileged `pull_request_target` executing attacker-controlled code, broad `write-all` permissions with untrusted inputs, or missing authorization gates.
+- `medium`: a meaningful missing or ineffective test gate, wildcard production dependency, disabled security linter, or unsafe configuration.
+- `low`: repository hygiene, untracked artifacts, formatting/style inconsistencies, or missing optional templates with modest impact.
 
 Each finding needs a concise description, evidence, and an actionable recommendation. After covering the relevant areas, call `finish_audit`."""

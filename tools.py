@@ -406,30 +406,88 @@ class RepoWorkspace:
                 continue
 
             triggers = data.get("on", data.get(True, {}))
+            trigger_names = []
+            trigger_details = []
             if isinstance(triggers, dict):
                 trigger_names = list(triggers)
+                for tr_name, tr_cfg in triggers.items():
+                    if isinstance(tr_cfg, dict):
+                        detail_parts = []
+                        if "branches" in tr_cfg:
+                            detail_parts.append(f"branches={tr_cfg['branches']}")
+                        if "paths" in tr_cfg:
+                            detail_parts.append(f"paths={tr_cfg['paths']}")
+                        if detail_parts:
+                            trigger_details.append(f"{tr_name} ({', '.join(detail_parts)})")
+                        else:
+                            trigger_details.append(str(tr_name))
+                    else:
+                        trigger_details.append(str(tr_name))
             elif isinstance(triggers, list):
                 trigger_names = triggers
+                trigger_details = [str(t) for t in triggers]
             elif triggers:
                 trigger_names = [str(triggers)]
-            else:
-                trigger_names = []
-            trigger_text = ", ".join(map(str, trigger_names)) or "unspecified"
-            lines = [f"Workflow {relative}: triggers=[{trigger_text}]"]
-            if "permissions" in data:
-                lines.append(f"  permissions: {json.dumps(data['permissions'], sort_keys=True)}")
+                trigger_details = [str(triggers)]
+
+            trigger_text = ", ".join(trigger_details) or "unspecified"
+            workflow_flags = []
+            if "workflow_run" in trigger_names:
+                workflow_flags.append("triggers on workflow_run (privileged execution in default branch context)")
+
+            wf_header = f"Workflow {relative}: triggers=[{trigger_text}]"
+            if workflow_flags:
+                wf_header += f" [flags: {', '.join(workflow_flags)}]"
+            lines = [wf_header]
+
+            top_permissions = data.get("permissions")
+            if top_permissions is not None:
+                lines.append(f"  permissions: {json.dumps(top_permissions, sort_keys=True)}")
+                if top_permissions == "write-all":
+                    lines.append("  [flag: top-level permissions: write-all]")
 
             jobs = data.get("jobs", {})
+            test_job_names = set()
             if isinstance(jobs, dict):
+                for j_name in jobs:
+                    if any(t in j_name.lower() for t in ("test", "check", "lint", "build", "verify")):
+                        test_job_names.add(j_name)
+
                 for job_name, job in jobs.items():
                     if not isinstance(job, dict):
                         continue
-                    lines.append(f"  job {job_name}:")
-                    if "permissions" in job:
-                        lines.append(
-                            f"    permissions: {json.dumps(job['permissions'], sort_keys=True)}"
-                        )
+                    job_flags = []
+                    job_if = job.get("if")
+                    if job_if is False or str(job_if).strip().lower() == "false":
+                        job_flags.append("job if: false (job never runs)")
+
+                    needs = job.get("needs")
+                    needs_list = [needs] if isinstance(needs, str) else (needs or [])
+                    is_deploy_job = any(k in job_name.lower() for k in ("deploy", "release", "publish"))
+                    if is_deploy_job and test_job_names and not any(dep in test_job_names for dep in needs_list):
+                        job_flags.append("deploy or release job has no dependency on test jobs")
+
+                    job_permissions = job.get("permissions")
+                    if job_permissions == "write-all":
+                        job_flags.append("permissions: write-all")
+                    elif isinstance(job_permissions, dict):
+                        write_scopes = [k for k, v in job_permissions.items() if v == "write"]
+                        if write_scopes:
+                            job_flags.append(f"GITHUB_TOKEN write scopes: {', '.join(write_scopes)}")
+
+                    runs_on = str(job.get("runs-on", ""))
+                    if "self-hosted" in runs_on and any("pull_request" in str(t) for t in trigger_names):
+                        job_flags.append("self-hosted runner on pull_request")
+
+                    job_suffix = f" [flags: {', '.join(job_flags)}]" if job_flags else ""
+                    lines.append(f"  job {job_name}:{job_suffix}")
+                    if needs_list:
+                        lines.append(f"    needs: {needs_list}")
+                    if job_permissions is not None:
+                        lines.append(f"    permissions: {json.dumps(job_permissions, sort_keys=True)}")
+
                     steps = job.get("steps", [])
+                    has_secrets_step = False
                     if isinstance(steps, list):
                         for step in steps:
                             if not isinstance(step, dict):
@@ -442,8 +500,22 @@ class RepoWorkspace:
                                 flags.append("continue-on-error=true")
                             if step.get("if") is False or str(step.get("if", "")).strip().lower() == "false":
                                 flags.append("if=false")
-                            if isinstance(run, str) and re.search(r"\|\|\s*true\b", run):
-                                flags.append("run contains '|| true'")
+                            if isinstance(run, str):
+                                if re.search(r"\|\|\s*true\b", run):
+                                    flags.append("run contains '|| true'")
+                                if re.search(r"curl\s+[^|]+\|\s*(ba|z)?sh\b", run) or re.search(r"wget\s+[^|]+\|\s*(ba|z)?sh\b", run):
+                                    flags.append("curl | sh execution")
+                                if re.search(r"pip\s+install\s+.*git\+[a-zA-Z0-9]+://[^@\s]+", run):
+                                    flags.append("pip install of unpinned git URL")
+                                if re.search(r"\$\{\{\s*secrets\.[^}]+\}\}", run):
+                                    has_secrets_step = True
+                                    flags.append("secrets used directly inside run command")
+                                if re.search(
+                                    r"\$\{\{\s*github\.event\.(issue|pull_request|comment)\.[^}]+\}\}",
+                                    run,
+                                ):
+                                    flags.append("run interpolates untrusted GitHub event data")
+
                             if isinstance(uses, str):
                                 ref = uses.rsplit("@", 1)[-1] if "@" in uses else ""
                                 if not re.fullmatch(r"[0-9a-fA-F]{40}", ref):
@@ -458,17 +530,435 @@ class RepoWorkspace:
                                         checkout_ref,
                                     ):
                                         flags.append("checks out untrusted pull request head")
-                            if isinstance(run, str) and re.search(
-                                r"\$\{\{\s*github\.event\.(issue|pull_request|comment)\.[^}]+\}\}",
-                                run,
-                            ):
-                                flags.append("run interpolates untrusted GitHub event data")
+                                    if "persist-credentials" not in step.get("with", {}):
+                                        flags.append("actions/checkout with persist-credentials default in privileged workflow")
+
                             suffix = f" [flags: {', '.join(flags)}]" if flags else ""
                             lines.append(f"    step: {label[:140]}{suffix}")
+
+                    if has_secrets_step and job_permissions is None and top_permissions is None:
+                        lines.append("    [warning: job uses secrets with default/missing permissions]")
+
             summaries.append("\n".join(lines))
         if self.walk_truncated:
             summaries.append("[workflow search truncated at the repository file scan limit]")
         return redact("\n".join(summaries))
+
+    def scan_secrets(self, directory: str = "") -> str:
+        """Scan repository text files for common credential formats and return path:line: rule_name ONLY."""
+        normalized_dir = ""
+        if directory and directory.strip() not in ("", ".", "./"):
+            try:
+                base = self.safe_path(directory)
+                if not base.is_dir():
+                    return f"Error: not a directory: {directory}"
+                normalized_dir = self.normalize_relative_path(directory).rstrip("/") + "/"
+            except ValueError as exc:
+                return f"Error: {exc}"
+
+        secret_rules: list[tuple[str, re.Pattern]] = [
+            ("aws_access_key", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
+            ("github_token", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b")),
+            ("openai_or_bearer_token", re.compile(r"\bsk-[A-Za-z0-9]{20,}\b")),
+            ("google_api_key", re.compile(r"\bAIza[0-9A-Za-z_-]{30,}\b")),
+            ("slack_token", re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b")),
+            ("private_key_block", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
+            (
+                "connection_string_with_password",
+                re.compile(r"[a-zA-Z0-9+.-]+://[^:\s'\"]+:[^@\s'\"]{4,}@[^/\s'\"]+"),
+            ),
+            (
+                "generic_credential_assignment",
+                re.compile(
+                    r"(?i)\b(?:api[_-]?key|secret|token|passwd|password)\b\s*[=:]\s*(['\"])[^\s'\"]{8,}\1"
+                ),
+            ),
+        ]
+
+        matches: list[str] = []
+        files_scanned = 0
+        file_entries = self._walk_files()
+        for relative, path, size, is_symlink in file_entries:
+            if normalized_dir and not relative.startswith(normalized_dir):
+                continue
+            if size > MAX_SEARCH_FILE_BYTES or is_symlink:
+                continue
+            if files_scanned >= MAX_SEARCH_FILES:
+                break
+            files_scanned += 1
+
+            try:
+                safe_file = self.safe_path(relative)
+                if not safe_file.is_file():
+                    continue
+                data = safe_file.read_bytes()
+                if b"\x00" in data:
+                    continue
+                text = data.decode("utf-8")
+            except (OSError, UnicodeDecodeError, ValueError):
+                continue
+
+            for line_idx, line in enumerate(text.splitlines(), start=1):
+                for rule_name, pattern in secret_rules:
+                    if pattern.search(line):
+                        matches.append(f"{relative}:{line_idx}: {rule_name}")
+                        if len(matches) >= 100:
+                            break
+                if len(matches) >= 100:
+                    break
+            if len(matches) >= 100:
+                break
+
+        if not matches:
+            return "No suspicious credentials found."
+        output = "\n".join(matches)
+        if len(matches) >= 100:
+            output += "\n[scan capped at 100 credential detections]"
+        return output
+
+    def list_suspicious_files(self) -> str:
+        """List committed artifacts that normally should not be tracked."""
+        suspicious: list[str] = []
+        ignored_env_samples = {".env.example", ".env.sample", ".env.template"}
+
+        for relative, path, size, is_symlink in self._walk_files():
+            filename = relative.rsplit("/", 1)[-1].casefold()
+            parts = [p.casefold() for p in relative.split("/")]
+
+            if filename.startswith(".env") and filename not in ignored_env_samples:
+                suspicious.append(f"{relative} ({size} bytes): committed environment configuration")
+                continue
+
+            if filename.endswith((".pyc", ".pyo", ".pyd")) or "__pycache__" in parts:
+                suspicious.append(f"{relative} ({size} bytes): compiled Python bytecode")
+                continue
+
+            if filename in {".ds_store", "thumbs.db"}:
+                suspicious.append(f"{relative} ({size} bytes): operating system metadata")
+                continue
+
+            if "node_modules" in parts:
+                suspicious.append(f"{relative} ({size} bytes): committed node_modules dependency")
+                continue
+
+            if ".idea" in parts or (len(parts) > 1 and parts[0] == ".vscode" and filename.endswith(".json")):
+                suspicious.append(f"{relative} ({size} bytes): committed IDE settings")
+                continue
+
+            if filename.endswith(".log"):
+                suspicious.append(f"{relative} ({size} bytes): log file")
+                continue
+
+            if any(part in {"dist", "build"} for part in parts[:-1]) or filename.endswith(".egg-info"):
+                suspicious.append(f"{relative} ({size} bytes): committed build or distribution artifact")
+                continue
+
+            if filename in {".coverage", "coverage.xml"} or any(part in {"htmlcov", ".pytest_cache"} for part in parts):
+                suspicious.append(f"{relative} ({size} bytes): test coverage / cache artifact")
+                continue
+
+            if filename.endswith((".sqlite", ".sqlite3", ".db")):
+                suspicious.append(f"{relative} ({size} bytes): local SQLite or database file")
+                continue
+
+            if filename.endswith((".pem", ".key", ".pkcs12", ".pfx")) or filename in {"id_rsa", "id_ed25519", "id_dsa"}:
+                suspicious.append(f"{relative} ({size} bytes): cryptographic private key or certificate file")
+                continue
+
+            if size > 10 * 1024 * 1024 or filename.endswith((".exe", ".dll", ".so", ".bin")):
+                suspicious.append(f"{relative} ({size} bytes): binary or oversized file")
+                continue
+
+        if not suspicious:
+            return "No suspicious files found."
+        return "\n".join(suspicious[:200])
+
+    def parse_manifest(self, path: str) -> str:
+        """Parse dependency manifests and report pinned/range/unpinned status and lockfile presence."""
+        try:
+            full_path = self.safe_path(path)
+            normalized_path = self.normalize_relative_path(path)
+        except ValueError as exc:
+            return f"Error: {exc}"
+
+        if not full_path.is_file():
+            return f"Error: manifest file does not exist: {normalized_path}"
+
+        try:
+            content = full_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return f"Error: cannot read {normalized_path} as UTF-8 text."
+
+        self.files_read.add(normalized_path)
+        filename = full_path.name.casefold()
+        parent = full_path.parent
+
+        lockfiles = []
+        dependencies: list[tuple[str, str, str]] = []
+
+        def classify_version(spec: str) -> str:
+            spec = spec.strip()
+            if not spec or spec == "*":
+                return "wildcard" if spec == "*" else "unpinned"
+            if spec.startswith(("==", "@")) or re.fullmatch(r"v?\d+(\.\d+)*", spec):
+                return "pinned"
+            if any(spec.startswith(op) for op in (">=", "<=", "~=", "^", ">", "<", "!=")):
+                return "range"
+            if "*" in spec or "latest" in spec.lower():
+                return "wildcard"
+            return "pinned"
+
+        if filename == "requirements.txt" or (filename.startswith("requirements") and filename.endswith(".txt")):
+            for candidate in ("requirements.lock", "requirements-lock.txt", "Pipfile.lock", "poetry.lock"):
+                if (parent / candidate).is_file():
+                    lockfiles.append(candidate)
+            for line in content.splitlines():
+                line = line.strip()
+                if not line or line.startswith(("#", "-r", "-i", "--")):
+                    continue
+                m = re.match(r"^([A-Za-z0-9_.-]+)\s*([~=<>!@*].*)?$", line)
+                if m:
+                    pkg, spec = m.group(1), (m.group(2) or "").strip()
+                    dependencies.append((pkg, spec, classify_version(spec)))
+
+        elif filename == "package.json":
+            for candidate in ("package-lock.json", "yarn.lock", "pnpm-lock.yaml", "bun.lockb"):
+                if (parent / candidate).is_file():
+                    lockfiles.append(candidate)
+            try:
+                pkg_data = json.loads(content)
+                for section in ("dependencies", "devDependencies", "peerDependencies"):
+                    deps = pkg_data.get(section, {})
+                    if isinstance(deps, dict):
+                        for pkg, spec in deps.items():
+                            dependencies.append((f"{pkg} ({section})", str(spec), classify_version(str(spec))))
+            except json.JSONDecodeError:
+                return f"Error: invalid JSON in {normalized_path}"
+
+        elif filename == "pyproject.toml":
+            for candidate in ("poetry.lock", "uv.lock", "pdm.lock"):
+                if (parent / candidate).is_file():
+                    lockfiles.append(candidate)
+            in_deps = False
+            for line in content.splitlines():
+                stripped = line.strip()
+                if stripped.startswith("["):
+                    in_deps = any(k in stripped for k in ("dependencies", "project.dependencies"))
+                    continue
+                if in_deps and stripped and not stripped.startswith("#"):
+                    m = re.match(r'^["\']?([A-Za-z0-9_.-]+)\s*([~=<>!@^].*?)?["\']?,?$', stripped)
+                    if m:
+                        pkg, spec = m.group(1), (m.group(2) or "").strip()
+                        dependencies.append((pkg, spec, classify_version(spec)))
+
+        elif filename == "pipfile":
+            if (parent / "Pipfile.lock").is_file():
+                lockfiles.append("Pipfile.lock")
+            for line in content.splitlines():
+                m = re.match(r'^([A-Za-z0-9_.-]+)\s*=\s*["\']([^"\']+)["\']', line.strip())
+                if m:
+                    dependencies.append((m.group(1), m.group(2), classify_version(m.group(2))))
+
+        elif filename == "cargo.toml":
+            if (parent / "Cargo.lock").is_file():
+                lockfiles.append("Cargo.lock")
+            for line in content.splitlines():
+                m = re.match(r'^([A-Za-z0-9_.-]+)\s*=\s*(?:\{.*version\s*=\s*["\']([^"\']+)["\']|["\']([^"\']+)["\'])', line.strip())
+                if m:
+                    spec = m.group(2) or m.group(3) or ""
+                    dependencies.append((m.group(1), spec, classify_version(spec)))
+
+        elif filename == "go.mod":
+            if (parent / "go.sum").is_file():
+                lockfiles.append("go.sum")
+            for line in content.splitlines():
+                m = re.match(r'^\s*([A-Za-z0-9_.\-\/]+)\s+(v[0-9A-Za-z_.\-]+)', line)
+                if m:
+                    dependencies.append((m.group(1), m.group(2), classify_version(m.group(2))))
+
+        elif filename == "composer.json":
+            if (parent / "composer.lock").is_file():
+                lockfiles.append("composer.lock")
+            try:
+                comp_data = json.loads(content)
+                for section in ("require", "require-dev"):
+                    for pkg, spec in comp_data.get(section, {}).items():
+                        dependencies.append((f"{pkg} ({section})", str(spec), classify_version(str(spec))))
+            except json.JSONDecodeError:
+                return f"Error: invalid JSON in {normalized_path}"
+        else:
+            return f"Unsupported manifest type: {filename}. Supported: requirements.txt, pyproject.toml, package.json, Pipfile, go.mod, Cargo.toml, composer.json."
+
+        lockfile_status = f"Lockfile present: {', '.join(lockfiles)}" if lockfiles else "No lockfile found in directory."
+        lines = [f"Manifest: {normalized_path}", lockfile_status, f"Total dependencies: {len(dependencies)}"]
+        for pkg, spec, cls in dependencies[:100]:
+            lines.append(f"  - {pkg}: {spec or '[none]'} ({cls})")
+        if len(dependencies) > 100:
+            lines.append(f"  [and {len(dependencies) - 100} more dependencies]")
+        return "\n".join(lines)
+
+    def git_show(self, commit: str, path: str = "", timeout_seconds: int = 10) -> str:
+        """Inspect a specific commit or file at that commit in read-only mode."""
+        if not re.fullmatch(r"^[0-9a-fA-F]{4,40}$", commit):
+            return "Error: commit must be a valid hex commit hash (4 to 40 characters)."
+
+        command = ["git", "show", "--no-patch", "--format=%h|%an|%ad|%s", commit]
+        if path:
+            try:
+                _ = self.safe_path(path)
+                norm_path = self.normalize_relative_path(path)
+            except ValueError as exc:
+                return f"Error: {exc}"
+            command = ["git", "show", f"{commit}:{norm_path}"]
+
+        try:
+            result = subprocess.run(
+                command,
+                cwd=self.root,
+                capture_output=True,
+                text=True,
+                timeout=timeout_seconds,
+                check=False,
+                env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_CONFIG_NOSYSTEM": "1"},
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+            return redact(f"Error: could not run git show: {exc}")
+
+        if result.returncode:
+            detail = (result.stderr or "git show failed").strip()
+            return redact(f"Error: {detail[:1000]}")
+        output = result.stdout or ""
+        if len(output) > MAX_READ_OUTPUT:
+            output = output[:MAX_READ_OUTPUT] + "\n[truncated by output size limit]"
+        return redact(output if output else "[empty output]")
+
+    def git_history_search(self, pattern: str, timeout_seconds: int = 10) -> str:
+        """Search commit history diffs for a string/regex (read-only)."""
+        if not isinstance(pattern, str) or not pattern or len(pattern) > 200:
+            return "Error: pattern must contain 1 to 200 characters."
+
+        command = [
+            "git",
+            "log",
+            "-S",
+            pattern,
+            "-n",
+            "10",
+            "--pretty=format:%h|%an|%ad|%s",
+            "--date=short",
+        ]
+        try:
+            result = subprocess.run(
+                command,
+                cwd=self.root,
+                capture_output=True,
+                text=True,
+                timeout=timeout_seconds,
+                check=False,
+                env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_CONFIG_NOSYSTEM": "1"},
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+            return redact(f"Error: could not search git history: {exc}")
+
+        if result.returncode:
+            detail = (result.stderr or "git log -S failed").strip()
+            return redact(f"Error: {detail[:1000]}")
+        return redact(result.stdout or "No commits found touching this pattern.")
+
+    def check_equivalents(self) -> str:
+        """Report existing tools and configurations to prevent false absence findings."""
+        files = [rel.casefold() for rel, _, _, _ in self._walk_files()]
+
+        def has_any(patterns: list[str]) -> list[str]:
+            found = []
+            for p in patterns:
+                for f in files:
+                    if fnmatch.fnmatchcase(f, p.casefold()):
+                        found.append(f)
+                        break
+            return found
+
+        linters = has_any(
+            [
+                "ruff.toml",
+                ".ruff.toml",
+                "pyproject.toml",
+                ".flake8",
+                ".pylintrc",
+                ".eslintrc*",
+                "eslint.config.*",
+                ".prettierrc*",
+                "prettier.config.*",
+                ".pre-commit-config.yaml",
+                "biome.json",
+            ]
+        )
+        workflows = self.list_workflows().lower()
+        if "lint" in workflows or "ruff" in workflows or "eslint" in workflows:
+            linters.append("CI lint step")
+
+        test_configs = has_any(
+            [
+                "pytest.ini",
+                "setup.cfg",
+                "conftest.py",
+                "jest.config.*",
+                "vitest.config.*",
+                "karma.conf.js",
+                ".rspec",
+            ]
+        )
+        lockfiles = has_any(
+            [
+                "poetry.lock",
+                "uv.lock",
+                "pdm.lock",
+                "pipfile.lock",
+                "requirements.lock",
+                "package-lock.json",
+                "yarn.lock",
+                "pnpm-lock.yaml",
+                "bun.lockb",
+                "cargo.lock",
+                "go.sum",
+                "composer.lock",
+            ]
+        )
+        dep_automation = has_any(
+            [
+                ".github/dependabot.yml",
+                ".github/dependabot.yaml",
+                ".github/renovate.json",
+                ".github/renovate.json5",
+                "renovate.json",
+            ]
+        )
+        ownership = has_any(
+            [
+                ".github/codeowners",
+                "codeowners",
+                "docs/codeowners",
+                ".github/pull_request_template.md",
+                ".github/pull_request_template/*",
+            ]
+        )
+        license_files = has_any(["license*", "copying*"])
+        docker_files = has_any(["dockerfile*", "docker/dockerfile*", "containerfile*"])
+
+        report = {
+            "linter_or_formatter": linters or "None detected",
+            "test_runner_config": test_configs or "None detected",
+            "ecosystem_lockfile": lockfiles or "None detected",
+            "dependency_automation": dep_automation or "None detected",
+            "ownership_or_pr_templates": ownership or "None detected",
+            "license": license_files or "None detected",
+            "container_build": docker_files or "None detected",
+        }
+        lines = ["Repository Equivalents Report (use this to avoid reporting missing optional files):"]
+        for key, val in report.items():
+            val_str = ", ".join(val) if isinstance(val, list) else val
+            lines.append(f"  {key}: {val_str}")
+        return "\n".join(lines)
 
 
 INSPECTION_TOOL_SCHEMAS: list[dict[str, Any]] = [
@@ -516,6 +1006,61 @@ INSPECTION_TOOL_SCHEMAS: list[dict[str, Any]] = [
         "description": "Summarize GitHub Actions workflow triggers, permissions, jobs, steps, and common risky patterns. Read the raw workflow file before reporting a finding so the final line and snippet can be verified.",
         "parameters": {"type": "object", "properties": {}, "required": []},
     },
+    {
+        "name": "scan_secrets",
+        "description": "Regex scan repository files for common credential formats (AWS, GitHub, Google, Slack, OpenAI tokens, private keys, connection strings). Returns path:line: rule_name ONLY (never secret values).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "directory": {"type": "string", "description": "Optional repository-relative directory to narrow scan."}
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "list_suspicious_files",
+        "description": "List committed artifacts that normally should not be tracked, such as .env files, caches, .DS_Store, node_modules, IDE settings, logs, build outputs, coverage, and key files.",
+        "parameters": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "parse_manifest",
+        "description": "Parse a dependency manifest (requirements.txt, pyproject.toml, package.json, Pipfile, go.mod, Cargo.toml, composer.json) to list dependencies with pinned/range/unpinned/wildcard classification and note whether a lockfile exists.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Repository-relative path to the manifest file."}
+            },
+            "required": ["path"],
+        },
+    },
+    {
+        "name": "git_show",
+        "description": "Read-only inspection of a specific commit or file at that commit (e.g. to inspect history or deleted files).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "commit": {"type": "string", "description": "Hex commit hash (4 to 40 characters)."},
+                "path": {"type": "string", "description": "Optional repository-relative file path."}
+            },
+            "required": ["commit"],
+        },
+    },
+    {
+        "name": "git_history_search",
+        "description": "Read-only search of commit history diffs for a pattern to find code, configuration, or credentials added or removed in past commits.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string", "description": "String or regex pattern to search in git commit history."}
+            },
+            "required": ["pattern"],
+        },
+    },
+    {
+        "name": "check_equivalents",
+        "description": "Report existing linting, formatting, test runners, lockfiles, dependency automation (Dependabot), ownership, license, and container configurations to prevent false absence findings.",
+        "parameters": {"type": "object", "properties": {}, "required": []},
+    },
 ]
 
 
@@ -537,6 +1082,16 @@ class RepositoryTools:
                 timeout_seconds=self.timeout_seconds, **arguments
             ),
             "list_workflows": lambda: self.workspace.list_workflows(),
+            "scan_secrets": lambda: self.workspace.scan_secrets(**arguments),
+            "list_suspicious_files": lambda: self.workspace.list_suspicious_files(),
+            "parse_manifest": lambda: self.workspace.parse_manifest(**arguments),
+            "git_show": lambda: self.workspace.git_show(
+                timeout_seconds=self.timeout_seconds, **arguments
+            ),
+            "git_history_search": lambda: self.workspace.git_history_search(
+                timeout_seconds=self.timeout_seconds, **arguments
+            ),
+            "check_equivalents": lambda: self.workspace.check_equivalents(),
         }
         handler = handlers.get(name)
         if handler is None:

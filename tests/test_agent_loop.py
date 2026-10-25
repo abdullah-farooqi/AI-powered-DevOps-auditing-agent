@@ -60,8 +60,15 @@ def test_tool_sequence_is_dynamic_and_finding_is_validated(
         if call_count == 5:
             assert "Before finishing" in tool_outputs[-1]
             return _reply("read_file", {"path": "README.md"})
-        assert call_count == 6
-        return _reply("finish_audit")
+        if call_count == 6:
+            return _reply("finish_audit")
+        # Critic pass verification call
+        return LLMReply(
+            text='{"supported": true, "reason": "verified"}',
+            tool_calls=[],
+            raw=None,
+            raw_content=None,
+        )
 
     monkeypatch.setattr(agent_loop, "chat", fake_chat)
     result = agent_loop.run_agent_loop(
@@ -72,7 +79,7 @@ def test_tool_sequence_is_dynamic_and_finding_is_validated(
     )
     assert result.completed
     assert len(result.findings) == 1
-    assert [entry.get("tool") for entry in result.trace] == [
+    assert [entry["tool"] for entry in result.trace if "tool" in entry] == [
         "list_files",
         "read_file",
         "report_violation",
@@ -213,3 +220,199 @@ def test_fallback_model_continues_with_existing_audit_context(
         for event in result.trace
     )
     assert client.closed
+
+
+def test_wrap_up_warning_injected_near_step_limit(
+    workspace: RepoWorkspace, monkeypatch
+) -> None:
+    client = FakeClient()
+    monkeypatch.setattr(agent_loop, "create_client", lambda: client)
+    saw_budget_notice = False
+
+    def fake_chat(_client, _prompt, messages, _schemas, **_kwargs):
+        nonlocal saw_budget_notice
+        for m in messages:
+            if m.get("role") == "user" and "Budget notice: Exactly 5 steps remain" in m.get("content", ""):
+                saw_budget_notice = True
+        return _reply("list_files")
+
+    monkeypatch.setattr(agent_loop, "chat", fake_chat)
+    agent_loop.run_agent_loop(
+        workspace,
+        "https://github.com/example/repo.git",
+        max_steps=6,
+        timeout_seconds=30,
+        enable_critic=False,
+    )
+    assert saw_budget_notice
+
+
+def test_finish_audit_forced_after_two_rejections(
+    workspace: RepoWorkspace, monkeypatch
+) -> None:
+    client = FakeClient()
+    monkeypatch.setattr(agent_loop, "create_client", lambda: client)
+    # Don't read anything so gaps exist
+    calls = 0
+
+    def fake_chat(_client, _prompt, _messages, _schemas, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return _reply("finish_audit")
+
+    monkeypatch.setattr(agent_loop, "chat", fake_chat)
+    result = agent_loop.run_agent_loop(
+        workspace,
+        "https://github.com/example/repo.git",
+        max_steps=5,
+        timeout_seconds=30,
+        enable_critic=False,
+    )
+    assert result.completed
+    assert calls == 2
+    assert any(e.get("type") == "finish_unmet_gaps" for e in result.trace)
+
+
+def test_critic_pass_drops_unsupported_finding(
+    workspace: RepoWorkspace, monkeypatch
+) -> None:
+    client = FakeClient()
+    monkeypatch.setattr(agent_loop, "create_client", lambda: client)
+    workspace.read_file("app.py")
+    workspace.read_file("README.md")
+    workspace.list_files()
+
+    chat_call_count = 0
+
+    def fake_chat(_client, prompt, _messages, _schemas, **_kwargs):
+        nonlocal chat_call_count
+        chat_call_count += 1
+        if chat_call_count == 1:
+            return _reply(
+                "report_violation",
+                {
+                    "rule_id": "SEC-001",
+                    "category": "security",
+                    "severity": "high",
+                    "file": "app.py",
+                    "line": 1,
+                    "description": "Hardcoded password",
+                    "evidence": "password found",
+                    "recommendation": "Use secrets",
+                    "snippet": 'password = "[REDACTED]"',
+                },
+            )
+        if chat_call_count == 2:
+            return _reply("finish_audit")
+        # Critic pass call
+        assert "strict DevOps audit critic" in prompt
+        return LLMReply(
+            text='{"supported": false, "reason": "Test fixture dummy password"}',
+            tool_calls=[],
+            raw=None,
+            raw_content=None,
+        )
+
+    monkeypatch.setattr(agent_loop, "chat", fake_chat)
+    result = agent_loop.run_agent_loop(
+        workspace,
+        "https://github.com/example/repo.git",
+        max_steps=5,
+        timeout_seconds=30,
+        enable_critic=True,
+    )
+    assert result.completed
+    assert len(result.findings) == 0
+    assert any(e.get("type") == "critic_drop" for e in result.trace)
+
+
+def test_critic_pass_fails_open_on_error(
+    workspace: RepoWorkspace, monkeypatch
+) -> None:
+    client = FakeClient()
+    monkeypatch.setattr(agent_loop, "create_client", lambda: client)
+    workspace.read_file("app.py")
+    workspace.read_file("README.md")
+    workspace.list_files()
+
+    chat_call_count = 0
+
+    def fake_chat(_client, prompt, _messages, _schemas, **_kwargs):
+        nonlocal chat_call_count
+        chat_call_count += 1
+        if chat_call_count == 1:
+            return _reply(
+                "report_violation",
+                {
+                    "rule_id": "SEC-001",
+                    "category": "security",
+                    "severity": "high",
+                    "file": "app.py",
+                    "line": 1,
+                    "description": "Hardcoded password",
+                    "evidence": "password found",
+                    "recommendation": "Use secrets",
+                    "snippet": 'password = "[REDACTED]"',
+                },
+            )
+        if chat_call_count == 2:
+            return _reply("finish_audit")
+        # Critic pass raises an error
+        raise agent_loop.LLMError("Critic timeout or unavailable")
+
+    monkeypatch.setattr(agent_loop, "chat", fake_chat)
+    result = agent_loop.run_agent_loop(
+        workspace,
+        "https://github.com/example/repo.git",
+        max_steps=5,
+        timeout_seconds=30,
+        enable_critic=True,
+    )
+    assert result.completed
+    # Fails open: finding is preserved
+    assert len(result.findings) == 1
+    assert any(e.get("type") == "critic_error" for e in result.trace)
+
+
+def test_critic_pass_can_be_disabled(
+    workspace: RepoWorkspace, monkeypatch
+) -> None:
+    client = FakeClient()
+    monkeypatch.setattr(agent_loop, "create_client", lambda: client)
+    workspace.read_file("app.py")
+    workspace.read_file("README.md")
+    workspace.list_files()
+
+    chat_call_count = 0
+
+    def fake_chat(_client, prompt, _messages, _schemas, **_kwargs):
+        nonlocal chat_call_count
+        chat_call_count += 1
+        if chat_call_count == 1:
+            return _reply(
+                "report_violation",
+                {
+                    "rule_id": "SEC-001",
+                    "category": "security",
+                    "severity": "high",
+                    "file": "app.py",
+                    "line": 1,
+                    "description": "Hardcoded password",
+                    "evidence": "password found",
+                    "recommendation": "Use secrets",
+                    "snippet": 'password = "[REDACTED]"',
+                },
+            )
+        return _reply("finish_audit")
+
+    monkeypatch.setattr(agent_loop, "chat", fake_chat)
+    result = agent_loop.run_agent_loop(
+        workspace,
+        "https://github.com/example/repo.git",
+        max_steps=5,
+        timeout_seconds=30,
+        enable_critic=False,
+    )
+    assert result.completed
+    assert len(result.findings) == 1
+    assert not any("critic" in str(e.get("type")) for e in result.trace)
