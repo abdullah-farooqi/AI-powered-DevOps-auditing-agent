@@ -116,6 +116,19 @@ ruff check .
 
 Tests cover path traversal, redaction, tool output, workflow parsing, report evidence and de-duplication, dynamic tool dispatch, retries, and CLI behavior. They use local temporary fixtures and mocked Gemini responses.
 
+## GitHub Actions CI/CD
+
+`.github/workflows/ci-cd.yml` runs Ruff and the test suite on pushes to `main`, pull requests, and manual runs, using Python 3.10, 3.11, and 3.12. The workflow needs no Gemini API key. Actions are pinned to full commit SHAs, and the workflow grants read-only repository access to the check jobs.
+
+Pushing a version tag such as `v1.0.0` runs the same checks and, if they pass, publishes a source archive as a GitHub Release. This command publishes the release:
+
+```bash
+git tag -a v1.0.0 -m "v1.0.0"
+git push origin v1.0.0
+```
+
+The release job uses the built-in `GITHUB_TOKEN` with `contents: write`; no long-lived release token or PyPI credential is needed. Since this project is a command-line tool, the release artifact is its deployment package rather than a running web service. The GitHub CLI release command verifies the pushed tag before creating the release.
+
 ## Limitations
 
 - Findings depend on the model and the evidence available in a public clone; review results before acting on them.
