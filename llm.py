@@ -34,7 +34,9 @@ except ImportError:
 _orig_getaddrinfo = socket.getaddrinfo
 
 
-def _ipv4_preferred_getaddrinfo(host: Any, port: Any, family: int = 0, type: int = 0, proto: int = 0, flags: int = 0) -> Any:
+def _ipv4_preferred_getaddrinfo(
+    host: Any, port: Any, family: int = 0, type: int = 0, proto: int = 0, flags: int = 0
+) -> Any:
     if family in (0, socket.AF_UNSPEC):
         family = socket.AF_INET
     return _orig_getaddrinfo(host, port, family, type, proto, flags)
@@ -210,7 +212,9 @@ def create_client() -> genai.Client | Any:
             close=lambda: None,
         )
     if provider != "gemini":
-        raise LLMError(f"Unsupported LLM_PROVIDER: {provider}. Supported: 'gemini', 'openai_compatible'.")
+        raise LLMError(
+            f"Unsupported LLM_PROVIDER: {provider}. Supported: 'gemini', 'openai_compatible'."
+        )
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         raise LLMError("GEMINI_API_KEY is missing. Add it to the local .env file.")
@@ -269,9 +273,7 @@ def _convert_messages(
                     parts.append(types.Part.from_text(text=str(message["content"])))
                 for call in message.get("tool_calls", []):
                     parts.append(
-                        types.Part.from_function_call(
-                            name=call["name"], args=call.get("args", {})
-                        )
+                        types.Part.from_function_call(name=call["name"], args=call.get("args", {}))
                     )
                 contents.append(types.Content(role="model", parts=parts))
             index += 1
@@ -288,9 +290,7 @@ def _convert_messages(
                 if tool_message.get("tool_call_id"):
                     response_args["id"] = tool_message["tool_call_id"]
                 tool_parts.append(
-                    types.Part(
-                        function_response=types.FunctionResponse(**response_args)
-                    )
+                    types.Part(function_response=types.FunctionResponse(**response_args))
                 )
                 index += 1
             contents.append(types.Content(role="user", parts=tool_parts))
@@ -470,9 +470,9 @@ def _chat_openai_compatible(
     temperature: float = 0.0,
     timeout_ms: int = 60_000,
 ) -> LLMReply:
-    url = (
-        base_url or os.getenv("LLM_BASE_URL", "https://api.openai.com/v1")
-    ).rstrip("/") + "/chat/completions"
+    url = (base_url or os.getenv("LLM_BASE_URL", "https://api.openai.com/v1")).rstrip(
+        "/"
+    ) + "/chat/completions"
     key = api_key or os.getenv("OPENAI_API_KEY", "")
     chosen_model = model or os.getenv("LLM_MODEL", "gpt-4o-mini")
     headers = {"Content-Type": "application/json"}
@@ -631,7 +631,9 @@ def chat(
                 candidate_models = router.candidate_models()
 
     if not candidate_models:
-        if os.getenv("LLM_FALLBACK_PROVIDER") == "openai_compatible" and os.getenv("OPENAI_API_KEY"):
+        if os.getenv("LLM_FALLBACK_PROVIDER") == "openai_compatible" and os.getenv(
+            "OPENAI_API_KEY"
+        ):
             if trace is not None:
                 trace.append(
                     {
@@ -732,9 +734,7 @@ def chat(
 
                 if getattr(exc, "code", None) == 429 or getattr(exc, "status_code", None) == 429:
                     consec = router.health[model_name].consecutive_429
-                    cooldown_delay = _provider_retry_after(exc) or min(
-                        60.0, float(2**consec * 5.0)
-                    )
+                    cooldown_delay = _provider_retry_after(exc) or min(60.0, float(2**consec * 5.0))
                     router.mark_cooldown(model_name, cooldown_delay, exc)
                     if trace is not None:
                         trace.append(
@@ -777,12 +777,8 @@ def chat(
         if response is not None:
             break
         if last_error is not None:
-            unavailable_note = (
-                " (model unavailable)" if _is_model_unavailable(last_error) else ""
-            )
-            model_errors.append(
-                f"{model_name}: {redact(str(last_error))[:700]}{unavailable_note}"
-            )
+            unavailable_note = " (model unavailable)" if _is_model_unavailable(last_error) else ""
+            model_errors.append(f"{model_name}: {redact(str(last_error))[:700]}{unavailable_note}")
         if (
             model_index + 1 >= len(candidate_models)
             or last_error is None
@@ -791,7 +787,9 @@ def chat(
             break
 
     if response is None:
-        if os.getenv("LLM_FALLBACK_PROVIDER") == "openai_compatible" and os.getenv("OPENAI_API_KEY"):
+        if os.getenv("LLM_FALLBACK_PROVIDER") == "openai_compatible" and os.getenv(
+            "OPENAI_API_KEY"
+        ):
             if trace is not None:
                 trace.append(
                     {

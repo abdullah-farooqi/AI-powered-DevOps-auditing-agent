@@ -150,7 +150,9 @@ def _compact_messages(messages: list[dict[str, Any]]) -> None:
         if total <= MAX_CONTEXT_TOOL_CHARS:
             break
         previous = str(messages[index].get("content", ""))
-        messages[index]["content"] = "[Earlier tool output omitted from model context; see the redacted trace.]"
+        messages[index]["content"] = (
+            "[Earlier tool output omitted from model context; see the redacted trace.]"
+        )
         total -= len(previous) - len(messages[index]["content"])
 
 
@@ -170,7 +172,7 @@ def _run_critic_pass(
         "You are a strict DevOps audit critic. Review the proposed finding against the verified snippet "
         "and surrounding file context. Determine whether the evidence genuinely supports the violation and "
         "that no valid equivalent or compensating control exists. "
-        "Respond strictly with a single JSON object: {\"supported\": true|false, \"reason\": \"...\"}."
+        'Respond strictly with a single JSON object: {"supported": true|false, "reason": "..."}.'
     )
 
     verified: list[dict[str, Any]] = []
@@ -186,7 +188,10 @@ def _run_critic_pass(
                     start = max(0, (line or 1) - 6)
                     end = min(len(lines), (line or 1) + 5)
                     surrounding_context = redact(
-                        "\n".join(f"{i}: {line_text}" for i, line_text in enumerate(lines[start:end], start + 1))
+                        "\n".join(
+                            f"{i}: {line_text}"
+                            for i, line_text in enumerate(lines[start:end], start + 1)
+                        )
                     )
             except (OSError, UnicodeDecodeError, ValueError):
                 pass
@@ -398,7 +403,9 @@ def run_agent_loop(
                 output = _tool_result_for_context(output)
 
                 try:
-                    safe_args = json.loads(redact(json.dumps(call.args, ensure_ascii=False, default=str)))
+                    safe_args = json.loads(
+                        redact(json.dumps(call.args, ensure_ascii=False, default=str))
+                    )
                 except (TypeError, ValueError):
                     safe_args = redact(str(call.args))[:1000]
                 trace.append(
@@ -425,21 +432,19 @@ def run_agent_loop(
                 completed = True
                 break
         else:
-            error_message = f"Maximum audit step count ({max_steps}) reached; writing partial findings."
+            error_message = (
+                f"Maximum audit step count ({max_steps}) reached; writing partial findings."
+            )
 
         final_findings = findings.findings
-        critic_active = (
-            enable_critic
-            and os.getenv("ENABLE_CRITIC", "true").strip().lower() not in ("false", "0", "no")
-        )
+        critic_active = enable_critic and os.getenv(
+            "ENABLE_CRITIC", "true"
+        ).strip().lower() not in ("false", "0", "no")
         if critic_active and final_findings:
             critic_model = (
-                os.getenv("LLM_CRITIC_MODEL", DEFAULT_CRITIC_MODEL).strip()
-                or DEFAULT_CRITIC_MODEL
+                os.getenv("LLM_CRITIC_MODEL", DEFAULT_CRITIC_MODEL).strip() or DEFAULT_CRITIC_MODEL
             )
-            critic_budget_ms = min(
-                30_000, max(5_000, int((deadline - time.monotonic()) * 1000))
-            )
+            critic_budget_ms = min(30_000, max(5_000, int((deadline - time.monotonic()) * 1000)))
             final_findings = _run_critic_pass(
                 client,
                 workspace,

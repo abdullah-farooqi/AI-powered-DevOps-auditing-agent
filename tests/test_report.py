@@ -50,9 +50,7 @@ def test_bad_severity_and_mismatched_rule_category_are_rejected(
     workspace.read_file("app.py")
     store = FindingStore(workspace)
     assert "severity must be" in store.add(_finding(severity="urgent"))
-    assert "does not match category" in store.add(
-        _finding(rule_id="DEP-001", category="security")
-    )
+    assert "does not match category" in store.add(_finding(rule_id="DEP-001", category="security"))
 
 
 def test_snippet_and_line_are_verified(workspace: RepoWorkspace) -> None:
@@ -224,7 +222,9 @@ def test_deduplication_overlapping_lines_and_description_similarity(
         evidence="Another instance of direct credential assignment",
     )
     workspace.list_files()
-    assert store.add(dup_desc) == "Duplicate finding ignored (similar description in same category)."
+    assert (
+        store.add(dup_desc) == "Duplicate finding ignored (similar description in same category)."
+    )
 
     # Dissimilar description or different category allowed
     distinct_finding = _finding(

@@ -53,9 +53,7 @@ def test_schema_validates_complete_findings(report_schema: dict) -> None:
     jsonschema.validate(instance=data, schema=report_schema)
 
 
-def test_schema_validates_write_report_output(
-    tmp_path: Path, report_schema: dict
-) -> None:
+def test_schema_validates_write_report_output(tmp_path: Path, report_schema: dict) -> None:
     out = tmp_path / "test_report.json"
     findings = [
         {

@@ -281,7 +281,9 @@ class RepoWorkspace:
 
     @staticmethod
     def normalize_relative_path(relative_path: str) -> str:
-        return PurePosixPath(*[p for p in relative_path.split("/") if p not in ("", ".")]).as_posix()
+        return PurePosixPath(
+            *[p for p in relative_path.split("/") if p not in ("", ".")]
+        ).as_posix()
 
     def _walk_files(self) -> list[tuple[str, Path, int, bool]]:
         entries: list[tuple[str, Path, int, bool]] = []
@@ -330,9 +332,7 @@ class RepoWorkspace:
             normalized_directory = self.normalize_relative_path(directory).rstrip("/") + "/"
 
         entries = [
-            entry
-            for entry in self._walk_files()
-            if entry[0].startswith(normalized_directory)
+            entry for entry in self._walk_files() if entry[0].startswith(normalized_directory)
         ]
         total = len(entries)
         shown = entries[:MAX_LIST_ENTRIES]
@@ -394,7 +394,9 @@ class RepoWorkspace:
         requested_end = end_line if end_line is not None else len(lines)
         final_line = min(requested_end, len(lines), line_cap_end)
         selected = lines[start_line - 1 : final_line]
-        rendered = "\n".join(f"{number}: {line}" for number, line in enumerate(selected, start_line))
+        rendered = "\n".join(
+            f"{number}: {line}" for number, line in enumerate(selected, start_line)
+        )
         rendered = redact(rendered)
         if len(rendered) > MAX_READ_OUTPUT:
             rendered = rendered[:MAX_READ_OUTPUT] + "\n[truncated by output size limit]"
@@ -407,9 +409,7 @@ class RepoWorkspace:
             rendered += "\n[" + "; ".join(notes) + "]"
         return rendered
 
-    def search_code(
-        self, pattern: str, file_glob: str = "*", timeout_seconds: float = 5.0
-    ) -> str:
+    def search_code(self, pattern: str, file_glob: str = "*", timeout_seconds: float = 5.0) -> str:
         if not isinstance(pattern, str) or not pattern or len(pattern) > 200:
             return "Error: pattern must contain 1 to 200 characters."
         try:
@@ -515,7 +515,9 @@ class RepoWorkspace:
             trigger_text = ", ".join(trigger_details) or "unspecified"
             workflow_flags = []
             if "workflow_run" in trigger_names:
-                workflow_flags.append("triggers on workflow_run (privileged execution in default branch context)")
+                workflow_flags.append(
+                    "triggers on workflow_run (privileged execution in default branch context)"
+                )
 
             wf_header = f"Workflow {relative}: triggers=[{trigger_text}]"
             if workflow_flags:
@@ -532,7 +534,9 @@ class RepoWorkspace:
             test_job_names = set()
             if isinstance(jobs, dict):
                 for j_name in jobs:
-                    if any(t in j_name.lower() for t in ("test", "check", "lint", "build", "verify")):
+                    if any(
+                        t in j_name.lower() for t in ("test", "check", "lint", "build", "verify")
+                    ):
                         test_job_names.add(j_name)
 
                 for job_name, job in jobs.items():
@@ -545,8 +549,14 @@ class RepoWorkspace:
 
                     needs = job.get("needs")
                     needs_list = [needs] if isinstance(needs, str) else (needs or [])
-                    is_deploy_job = any(k in job_name.lower() for k in ("deploy", "release", "publish"))
-                    if is_deploy_job and test_job_names and not any(dep in test_job_names for dep in needs_list):
+                    is_deploy_job = any(
+                        k in job_name.lower() for k in ("deploy", "release", "publish")
+                    )
+                    if (
+                        is_deploy_job
+                        and test_job_names
+                        and not any(dep in test_job_names for dep in needs_list)
+                    ):
                         job_flags.append("deploy or release job has no dependency on test jobs")
 
                     job_permissions = job.get("permissions")
@@ -555,10 +565,14 @@ class RepoWorkspace:
                     elif isinstance(job_permissions, dict):
                         write_scopes = [k for k, v in job_permissions.items() if v == "write"]
                         if write_scopes:
-                            job_flags.append(f"GITHUB_TOKEN write scopes: {', '.join(write_scopes)}")
+                            job_flags.append(
+                                f"GITHUB_TOKEN write scopes: {', '.join(write_scopes)}"
+                            )
 
                     runs_on = str(job.get("runs-on", ""))
-                    if "self-hosted" in runs_on and any("pull_request" in str(t) for t in trigger_names):
+                    if "self-hosted" in runs_on and any(
+                        "pull_request" in str(t) for t in trigger_names
+                    ):
                         job_flags.append("self-hosted runner on pull_request")
 
                     job_suffix = f" [flags: {', '.join(job_flags)}]" if job_flags else ""
@@ -566,7 +580,9 @@ class RepoWorkspace:
                     if needs_list:
                         lines.append(f"    needs: {needs_list}")
                     if job_permissions is not None:
-                        lines.append(f"    permissions: {json.dumps(job_permissions, sort_keys=True)}")
+                        lines.append(
+                            f"    permissions: {json.dumps(job_permissions, sort_keys=True)}"
+                        )
 
                     steps = job.get("steps", [])
                     has_secrets_step = False
@@ -580,12 +596,17 @@ class RepoWorkspace:
                             flags: list[str] = []
                             if step.get("continue-on-error") is True:
                                 flags.append("continue-on-error=true")
-                            if step.get("if") is False or str(step.get("if", "")).strip().lower() == "false":
+                            if (
+                                step.get("if") is False
+                                or str(step.get("if", "")).strip().lower() == "false"
+                            ):
                                 flags.append("if=false")
                             if isinstance(run, str):
                                 if re.search(r"\|\|\s*true\b", run):
                                     flags.append("run contains '|| true'")
-                                if re.search(r"curl\s+[^|]+\|\s*(ba|z)?sh\b", run) or re.search(r"wget\s+[^|]+\|\s*(ba|z)?sh\b", run):
+                                if re.search(r"curl\s+[^|]+\|\s*(ba|z)?sh\b", run) or re.search(
+                                    r"wget\s+[^|]+\|\s*(ba|z)?sh\b", run
+                                ):
                                     flags.append("curl | sh execution")
                                 if re.search(r"pip\s+install\s+.*git\+[a-zA-Z0-9]+://[^@\s]+", run):
                                     flags.append("pip install of unpinned git URL")
@@ -602,9 +623,8 @@ class RepoWorkspace:
                                 ref = uses.rsplit("@", 1)[-1] if "@" in uses else ""
                                 if not re.fullmatch(r"[0-9a-fA-F]{40}", ref):
                                     flags.append("action is not pinned to a full commit SHA")
-                                if (
-                                    "pull_request_target" in trigger_names
-                                    and uses.startswith("actions/checkout@")
+                                if "pull_request_target" in trigger_names and uses.startswith(
+                                    "actions/checkout@"
                                 ):
                                     checkout_ref = str(step.get("with", {}).get("ref", ""))
                                     if re.search(
@@ -613,13 +633,17 @@ class RepoWorkspace:
                                     ):
                                         flags.append("checks out untrusted pull request head")
                                     if "persist-credentials" not in step.get("with", {}):
-                                        flags.append("actions/checkout with persist-credentials default in privileged workflow")
+                                        flags.append(
+                                            "actions/checkout with persist-credentials default in privileged workflow"
+                                        )
 
                             suffix = f" [flags: {', '.join(flags)}]" if flags else ""
                             lines.append(f"    step: {label[:140]}{suffix}")
 
                     if has_secrets_step and job_permissions is None and top_permissions is None:
-                        lines.append("    [warning: job uses secrets with default/missing permissions]")
+                        lines.append(
+                            "    [warning: job uses secrets with default/missing permissions]"
+                        )
 
             summaries.append("\n".join(lines))
         if self.walk_truncated:
@@ -723,7 +747,9 @@ class RepoWorkspace:
                 suspicious.append(f"{relative} ({size} bytes): committed node_modules dependency")
                 continue
 
-            if ".idea" in parts or (len(parts) > 1 and parts[0] == ".vscode" and filename.endswith(".json")):
+            if ".idea" in parts or (
+                len(parts) > 1 and parts[0] == ".vscode" and filename.endswith(".json")
+            ):
                 suspicious.append(f"{relative} ({size} bytes): committed IDE settings")
                 continue
 
@@ -731,11 +757,17 @@ class RepoWorkspace:
                 suspicious.append(f"{relative} ({size} bytes): log file")
                 continue
 
-            if any(part in {"dist", "build"} for part in parts[:-1]) or filename.endswith(".egg-info"):
-                suspicious.append(f"{relative} ({size} bytes): committed build or distribution artifact")
+            if any(part in {"dist", "build"} for part in parts[:-1]) or filename.endswith(
+                ".egg-info"
+            ):
+                suspicious.append(
+                    f"{relative} ({size} bytes): committed build or distribution artifact"
+                )
                 continue
 
-            if filename in {".coverage", "coverage.xml"} or any(part in {"htmlcov", ".pytest_cache"} for part in parts):
+            if filename in {".coverage", "coverage.xml"} or any(
+                part in {"htmlcov", ".pytest_cache"} for part in parts
+            ):
                 suspicious.append(f"{relative} ({size} bytes): test coverage / cache artifact")
                 continue
 
@@ -743,8 +775,14 @@ class RepoWorkspace:
                 suspicious.append(f"{relative} ({size} bytes): local SQLite or database file")
                 continue
 
-            if filename.endswith((".pem", ".key", ".pkcs12", ".pfx")) or filename in {"id_rsa", "id_ed25519", "id_dsa"}:
-                suspicious.append(f"{relative} ({size} bytes): cryptographic private key or certificate file")
+            if filename.endswith((".pem", ".key", ".pkcs12", ".pfx")) or filename in {
+                "id_rsa",
+                "id_ed25519",
+                "id_dsa",
+            }:
+                suspicious.append(
+                    f"{relative} ({size} bytes): cryptographic private key or certificate file"
+                )
                 continue
 
             if size > 10 * 1024 * 1024 or filename.endswith((".exe", ".dll", ".so", ".bin")):
@@ -790,8 +828,15 @@ class RepoWorkspace:
                 return "wildcard"
             return "pinned"
 
-        if filename == "requirements.txt" or (filename.startswith("requirements") and filename.endswith(".txt")):
-            for candidate in ("requirements.lock", "requirements-lock.txt", "Pipfile.lock", "poetry.lock"):
+        if filename == "requirements.txt" or (
+            filename.startswith("requirements") and filename.endswith(".txt")
+        ):
+            for candidate in (
+                "requirements.lock",
+                "requirements-lock.txt",
+                "Pipfile.lock",
+                "poetry.lock",
+            ):
                 if (parent / candidate).is_file():
                     lockfiles.append(candidate)
             for line in content.splitlines():
@@ -813,7 +858,9 @@ class RepoWorkspace:
                     deps = pkg_data.get(section, {})
                     if isinstance(deps, dict):
                         for pkg, spec in deps.items():
-                            dependencies.append((f"{pkg} ({section})", str(spec), classify_version(str(spec))))
+                            dependencies.append(
+                                (f"{pkg} ({section})", str(spec), classify_version(str(spec)))
+                            )
             except json.JSONDecodeError:
                 return f"Error: invalid JSON in {normalized_path}"
 
@@ -854,7 +901,10 @@ class RepoWorkspace:
             if (parent / "Cargo.lock").is_file():
                 lockfiles.append("Cargo.lock")
             for line in content.splitlines():
-                m = re.match(r'^([A-Za-z0-9_.-]+)\s*=\s*(?:\{.*version\s*=\s*["\']([^"\']+)["\']|["\']([^"\']+)["\'])', line.strip())
+                m = re.match(
+                    r'^([A-Za-z0-9_.-]+)\s*=\s*(?:\{.*version\s*=\s*["\']([^"\']+)["\']|["\']([^"\']+)["\'])',
+                    line.strip(),
+                )
                 if m:
                     spec = m.group(2) or m.group(3) or ""
                     dependencies.append((m.group(1), spec, classify_version(spec)))
@@ -863,7 +913,7 @@ class RepoWorkspace:
             if (parent / "go.sum").is_file():
                 lockfiles.append("go.sum")
             for line in content.splitlines():
-                m = re.match(r'^\s*([A-Za-z0-9_.\-\/]+)\s+(v[0-9A-Za-z_.\-]+)', line)
+                m = re.match(r"^\s*([A-Za-z0-9_.\-\/]+)\s+(v[0-9A-Za-z_.\-]+)", line)
                 if m:
                     dependencies.append((m.group(1), m.group(2), classify_version(m.group(2))))
 
@@ -874,14 +924,24 @@ class RepoWorkspace:
                 comp_data = json.loads(content)
                 for section in ("require", "require-dev"):
                     for pkg, spec in comp_data.get(section, {}).items():
-                        dependencies.append((f"{pkg} ({section})", str(spec), classify_version(str(spec))))
+                        dependencies.append(
+                            (f"{pkg} ({section})", str(spec), classify_version(str(spec)))
+                        )
             except json.JSONDecodeError:
                 return f"Error: invalid JSON in {normalized_path}"
         else:
             return f"Unsupported manifest type: {filename}. Supported: requirements.txt, pyproject.toml, package.json, Pipfile, go.mod, Cargo.toml, composer.json."
 
-        lockfile_status = f"Lockfile present: {', '.join(lockfiles)}" if lockfiles else "No lockfile found in directory."
-        lines = [f"Manifest: {normalized_path}", lockfile_status, f"Total dependencies: {len(dependencies)}"]
+        lockfile_status = (
+            f"Lockfile present: {', '.join(lockfiles)}"
+            if lockfiles
+            else "No lockfile found in directory."
+        )
+        lines = [
+            f"Manifest: {normalized_path}",
+            lockfile_status,
+            f"Total dependencies: {len(dependencies)}",
+        ]
         for pkg, spec, cls in dependencies[:100]:
             lines.append(f"  - {pkg}: {spec or '[none]'} ({cls})")
         if len(dependencies) > 100:
@@ -1045,7 +1105,9 @@ class RepoWorkspace:
             "license": license_files or "None detected",
             "container_build": docker_files or "None detected",
         }
-        lines = ["Repository Equivalents Report (use this to avoid reporting missing optional files):"]
+        lines = [
+            "Repository Equivalents Report (use this to avoid reporting missing optional files):"
+        ]
         for key, val in report.items():
             val_str = ", ".join(val) if isinstance(val, list) else val
             lines.append(f"  {key}: {val_str}")
@@ -1058,7 +1120,12 @@ INSPECTION_TOOL_SCHEMAS: list[dict[str, Any]] = [
         "description": "List tracked-looking files in the cloned repository with sizes. Use this to understand the project structure and committed artifacts. An optional directory narrows the listing.",
         "parameters": {
             "type": "object",
-            "properties": {"directory": {"type": "string", "description": "Optional repository-relative directory."}},
+            "properties": {
+                "directory": {
+                    "type": "string",
+                    "description": "Optional repository-relative directory.",
+                }
+            },
             "required": [],
         },
     },
@@ -1081,8 +1148,14 @@ INSPECTION_TOOL_SCHEMAS: list[dict[str, Any]] = [
         "parameters": {
             "type": "object",
             "properties": {
-                "pattern": {"type": "string", "description": "Regular expression, at most 200 characters."},
-                "file_glob": {"type": "string", "description": "Optional path glob; defaults to all files."},
+                "pattern": {
+                    "type": "string",
+                    "description": "Regular expression, at most 200 characters.",
+                },
+                "file_glob": {
+                    "type": "string",
+                    "description": "Optional path glob; defaults to all files.",
+                },
             },
             "required": ["pattern"],
         },
@@ -1103,7 +1176,10 @@ INSPECTION_TOOL_SCHEMAS: list[dict[str, Any]] = [
         "parameters": {
             "type": "object",
             "properties": {
-                "directory": {"type": "string", "description": "Optional repository-relative directory to narrow scan."}
+                "directory": {
+                    "type": "string",
+                    "description": "Optional repository-relative directory to narrow scan.",
+                }
             },
             "required": [],
         },
@@ -1119,7 +1195,10 @@ INSPECTION_TOOL_SCHEMAS: list[dict[str, Any]] = [
         "parameters": {
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "Repository-relative path to the manifest file."}
+                "path": {
+                    "type": "string",
+                    "description": "Repository-relative path to the manifest file.",
+                }
             },
             "required": ["path"],
         },
@@ -1130,8 +1209,14 @@ INSPECTION_TOOL_SCHEMAS: list[dict[str, Any]] = [
         "parameters": {
             "type": "object",
             "properties": {
-                "commit": {"type": "string", "description": "Hex commit hash (4 to 40 characters)."},
-                "path": {"type": "string", "description": "Optional repository-relative file path."}
+                "commit": {
+                    "type": "string",
+                    "description": "Hex commit hash (4 to 40 characters).",
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Optional repository-relative file path.",
+                },
             },
             "required": ["commit"],
         },
@@ -1142,7 +1227,10 @@ INSPECTION_TOOL_SCHEMAS: list[dict[str, Any]] = [
         "parameters": {
             "type": "object",
             "properties": {
-                "pattern": {"type": "string", "description": "String or regex pattern to search in git commit history."}
+                "pattern": {
+                    "type": "string",
+                    "description": "String or regex pattern to search in git commit history.",
+                }
             },
             "required": ["pattern"],
         },

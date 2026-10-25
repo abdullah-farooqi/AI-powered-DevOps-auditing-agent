@@ -18,9 +18,7 @@ class FakeClient:
 
 def _reply(name: str | None = None, args=None, model_used: str | None = None) -> LLMReply:
     calls = [ToolCall(id=f"call-{name}", name=name, args=args or {})] if name else []
-    return LLMReply(
-        text="", tool_calls=calls, raw=None, raw_content=None, model_used=model_used
-    )
+    return LLMReply(text="", tool_calls=calls, raw=None, raw_content=None, model_used=model_used)
 
 
 def test_tool_sequence_is_dynamic_and_finding_is_validated(
@@ -215,16 +213,13 @@ def test_fallback_model_continues_with_existing_audit_context(
 
     assert result.completed
     assert any(
-        event.get("type") == "model_fallback"
-        and event.get("context_resumed") is True
+        event.get("type") == "model_fallback" and event.get("context_resumed") is True
         for event in result.trace
     )
     assert client.closed
 
 
-def test_wrap_up_warning_injected_near_step_limit(
-    workspace: RepoWorkspace, monkeypatch
-) -> None:
+def test_wrap_up_warning_injected_near_step_limit(workspace: RepoWorkspace, monkeypatch) -> None:
     client = FakeClient()
     monkeypatch.setattr(agent_loop, "create_client", lambda: client)
     saw_budget_notice = False
@@ -232,7 +227,9 @@ def test_wrap_up_warning_injected_near_step_limit(
     def fake_chat(_client, _prompt, messages, _schemas, **_kwargs):
         nonlocal saw_budget_notice
         for m in messages:
-            if m.get("role") == "user" and "Budget notice: Exactly 5 steps remain" in m.get("content", ""):
+            if m.get("role") == "user" and "Budget notice: Exactly 5 steps remain" in m.get(
+                "content", ""
+            ):
                 saw_budget_notice = True
         return _reply("list_files")
 
@@ -247,9 +244,7 @@ def test_wrap_up_warning_injected_near_step_limit(
     assert saw_budget_notice
 
 
-def test_finish_audit_forced_after_two_rejections(
-    workspace: RepoWorkspace, monkeypatch
-) -> None:
+def test_finish_audit_forced_after_two_rejections(workspace: RepoWorkspace, monkeypatch) -> None:
     client = FakeClient()
     monkeypatch.setattr(agent_loop, "create_client", lambda: client)
     # Don't read anything so gaps exist
@@ -273,9 +268,7 @@ def test_finish_audit_forced_after_two_rejections(
     assert any(e.get("type") == "finish_unmet_gaps" for e in result.trace)
 
 
-def test_critic_pass_drops_unsupported_finding(
-    workspace: RepoWorkspace, monkeypatch
-) -> None:
+def test_critic_pass_drops_unsupported_finding(workspace: RepoWorkspace, monkeypatch) -> None:
     client = FakeClient()
     monkeypatch.setattr(agent_loop, "create_client", lambda: client)
     workspace.read_file("app.py")
@@ -326,9 +319,7 @@ def test_critic_pass_drops_unsupported_finding(
     assert any(e.get("type") == "critic_drop" for e in result.trace)
 
 
-def test_critic_pass_fails_open_on_error(
-    workspace: RepoWorkspace, monkeypatch
-) -> None:
+def test_critic_pass_fails_open_on_error(workspace: RepoWorkspace, monkeypatch) -> None:
     client = FakeClient()
     monkeypatch.setattr(agent_loop, "create_client", lambda: client)
     workspace.read_file("app.py")
@@ -374,9 +365,7 @@ def test_critic_pass_fails_open_on_error(
     assert any(e.get("type") == "critic_error" for e in result.trace)
 
 
-def test_critic_pass_can_be_disabled(
-    workspace: RepoWorkspace, monkeypatch
-) -> None:
+def test_critic_pass_can_be_disabled(workspace: RepoWorkspace, monkeypatch) -> None:
     client = FakeClient()
     monkeypatch.setattr(agent_loop, "create_client", lambda: client)
     workspace.read_file("app.py")

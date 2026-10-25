@@ -1,0 +1,62 @@
+name: Live Repository Audit
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo_url:
+        description: "Public GitHub repository URL to audit (https://github.com/OWNER/REPO)"
+        required: true
+        type: string
+        default: "https://github.com/octocat/Hello-World"
+      max_steps:
+        description: "Maximum audit turns"
+        required: false
+        type: number
+        default: 40
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: Execute Audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out agent source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Run Audit
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          python agent.py \
+            --repo "${{ inputs.repo_url }}" \
+            --output report.json \
+            --trace-output trace.jsonl \
+            --max-steps ${{ inputs.max_steps }}
+
+      - name: Upload Audit Report Artifact
+        if: always()
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
+        with:
+          name: audit-report
+          path: |
+            report.json
+            trace.jsonl
+          if-no-files-found: warn

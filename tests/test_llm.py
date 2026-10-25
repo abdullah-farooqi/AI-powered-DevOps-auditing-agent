@@ -73,9 +73,7 @@ def test_chat_uses_manual_function_calling_and_parses_calls(
 def test_convert_messages_preserves_model_content_and_function_response() -> None:
     raw_model_content = types.Content(
         role="model",
-        parts=[
-            types.Part.from_function_call(name="read_file", args={"path": "README.md"})
-        ],
+        parts=[types.Part.from_function_call(name="read_file", args={"path": "README.md"})],
     )
     converted = llm._convert_messages(
         [
@@ -146,9 +144,7 @@ def test_chat_falls_back_immediately_on_quota_and_reuses_context(
 ) -> None:
     monkeypatch.setenv("LLM_MAX_RETRIES", "4")
     monkeypatch.setenv("LLM_MODEL", "gemini-3.8-flash")
-    monkeypatch.setenv(
-        "LLM_FALLBACK_MODELS", "gemini-3.6-flash,gemini-3.5-flash-lite"
-    )
+    monkeypatch.setenv("LLM_FALLBACK_MODELS", "gemini-3.6-flash,gemini-3.5-flash-lite")
     sleeps = []
     monkeypatch.setattr(llm.time, "sleep", sleeps.append)
 

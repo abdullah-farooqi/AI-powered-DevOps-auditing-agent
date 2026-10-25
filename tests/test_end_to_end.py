@@ -33,7 +33,9 @@ jobs:
 """,
         encoding="utf-8",
     )
-    (repo / ".env.production").write_text('PASSWORD = "secret_database_password"\n', encoding="utf-8")
+    (repo / ".env.production").write_text(
+        'PASSWORD = "secret_database_password"\n', encoding="utf-8"
+    )
     return repo
 
 
@@ -134,7 +136,9 @@ def test_end_to_end_defect_audit_detects_violations_and_redacts(
         if step_index == 6:
             assert "write-all" in latest_output
             observed_tool_inputs.append("read_workflow")
-            return LLMReply("", [ToolCall("6", "read_file", {"path": ".github/workflows/ci.yml"})], None, None)
+            return LLMReply(
+                "", [ToolCall("6", "read_file", {"path": ".github/workflows/ci.yml"})], None, None
+            )
 
         if step_index == 7:
             assert "permissions: write-all" in latest_output
@@ -169,7 +173,9 @@ def test_end_to_end_defect_audit_detects_violations_and_redacts(
         if step_index == 9:
             assert ".env.production" in latest_output
             observed_tool_inputs.append("read_env")
-            return LLMReply("", [ToolCall("9", "read_file", {"path": ".env.production"})], None, None)
+            return LLMReply(
+                "", [ToolCall("9", "read_file", {"path": ".env.production"})], None, None
+            )
 
         if step_index == 10:
             assert "PASSWORD" in latest_output

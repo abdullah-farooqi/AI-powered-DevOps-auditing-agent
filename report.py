@@ -60,8 +60,16 @@ REPORT_TOOL_SCHEMA: dict[str, Any] = {
             "rule_id": {"type": "string", "description": "Stable identifier such as SEC-001."},
             "category": {"type": "string", "enum": sorted(CATEGORIES)},
             "severity": {"type": "string", "enum": sorted(SEVERITIES)},
-            "file": {"type": "string", "nullable": True, "description": "Repository-relative path, or null for repository-wide absence."},
-            "line": {"type": "integer", "nullable": True, "description": "1-based line number, or null."},
+            "file": {
+                "type": "string",
+                "nullable": True,
+                "description": "Repository-relative path, or null for repository-wide absence.",
+            },
+            "line": {
+                "type": "integer",
+                "nullable": True,
+                "description": "1-based line number, or null.",
+            },
             "description": {"type": "string"},
             "evidence": {"type": "string"},
             "recommendation": {"type": "string"},
@@ -177,7 +185,10 @@ class FindingStore:
             normalized_check = _normalize_whitespace(check_text)
             raw_snippet_norm = _normalize_whitespace(snippet)
             stripped_snippet_norm = _normalize_whitespace(_strip_line_numbers(snippet))
-            if raw_snippet_norm not in normalized_check and stripped_snippet_norm not in normalized_check:
+            if (
+                raw_snippet_norm not in normalized_check
+                and stripped_snippet_norm not in normalized_check
+            ):
                 return (
                     "Error: snippet was not found in the cited file near the reported line; "
                     "snippet must be exact text from the file WITHOUT line-number prefixes."
@@ -213,7 +224,11 @@ class FindingStore:
                 severity_reason = f"Adjusted severity from {severity} to medium (hygiene-only findings are at most medium)"
 
         # 3. Absence findings for optional files: at most 'low' unless evidence of impact
-        elif file_name is None and category in ("repository_hygiene", "collaboration", "configuration"):
+        elif file_name is None and category in (
+            "repository_hygiene",
+            "collaboration",
+            "configuration",
+        ):
             has_impact = any(
                 w in evid_lower
                 for w in ("exploit", "outage", "failure", "severe", "breach", "impact")

@@ -11,7 +11,9 @@ from tools import RepoWorkspace
 def repo_root(tmp_path: Path) -> Path:
     root = tmp_path / "repo"
     root.mkdir()
-    (root / "app.py").write_text('password = "long-secret-value-123"\nprint("hello")\n', encoding="utf-8")
+    (root / "app.py").write_text(
+        'password = "long-secret-value-123"\nprint("hello")\n', encoding="utf-8"
+    )
     (root / "README.md").write_text("# Demo repository\n", encoding="utf-8")
     (root / ".git").mkdir()
     (root / ".git" / "config").write_text("private internals\n", encoding="utf-8")
@@ -29,9 +31,7 @@ def insecure_repo(tmp_path: Path) -> Path:
     root = tmp_path / "insecure-repo"
     workflow = root / ".github" / "workflows" / "ci.yml"
     workflow.parent.mkdir(parents=True)
-    (root / "app.py").write_text(
-        'API_KEY = "fake-assignment-key-12345"\n', encoding="utf-8"
-    )
+    (root / "app.py").write_text('API_KEY = "fake-assignment-key-12345"\n', encoding="utf-8")
     workflow.write_text(
         """name: CI
 on: [pull_request_target]

@@ -78,9 +78,7 @@ def test_cli_writes_partial_report_and_returns_failure(
         lambda *args, **kwargs: AuditResult([], [], False, 1, "LLM timed out"),
     )
     output = tmp_path / "partial.json"
-    result = agent.main(
-        ["--repo", "https://github.com/example/repo", "--output", str(output)]
-    )
+    result = agent.main(["--repo", "https://github.com/example/repo", "--output", str(output)])
     assert result == 1
     assert json.loads(output.read_text(encoding="utf-8"))["violations"] == []
 
@@ -117,9 +115,7 @@ def test_cli_partial_report_with_inspection_steps_exits_zero(
         ),
     )
     output = tmp_path / "partial.json"
-    result = agent.main(
-        ["--repo", "https://github.com/example/repo", "--output", str(output)]
-    )
+    result = agent.main(["--repo", "https://github.com/example/repo", "--output", str(output)])
     assert result == 0
     captured = capsys.readouterr()
     assert "Warning: Audit incomplete; partial report was written" in captured.err
@@ -128,9 +124,7 @@ def test_cli_partial_report_with_inspection_steps_exits_zero(
     assert report["violations"][0]["rule_id"] == "SEC-001"
 
 
-def test_cli_handles_missing_api_key_error(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_cli_handles_missing_api_key_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         agent,
         "clone_public_repo",

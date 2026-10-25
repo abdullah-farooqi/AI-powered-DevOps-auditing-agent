@@ -83,7 +83,9 @@ def validate_output_path(path_str: str, arg_name: str = "--output") -> Path:
         try:
             resolved.relative_to(cwd)
         except ValueError as exc:
-            raise ValueError(f"{arg_name} path escapes current working directory: {path_str}") from exc
+            raise ValueError(
+                f"{arg_name} path escapes current working directory: {path_str}"
+            ) from exc
     else:
         resolved = raw_path.resolve()
 
@@ -122,9 +124,7 @@ def main(argv: list[str] | None = None) -> int:
         repository_url = normalize_github_url(args.repo)
         output_path = validate_output_path(args.output, "--output")
         trace_path = (
-            validate_output_path(args.trace_output, "--trace-output")
-            if args.trace_output
-            else None
+            validate_output_path(args.trace_output, "--trace-output") if args.trace_output else None
         )
     except ValueError as exc:
         parser.error(str(exc))
